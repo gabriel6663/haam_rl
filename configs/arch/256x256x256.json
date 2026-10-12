@@ -1,0 +1,54 @@
+{
+  "name": "arch_256x256x256",
+  "plant": {
+    "vehicles": 100,
+    "fill_target": 25,
+    "color_probabilities": [
+      0.06,
+      0.38,
+      0.29,
+      0.14,
+      0.1,
+      0.03
+    ]
+  },
+  "observation": {
+    "encoding": "onehot",
+    "lookahead": 10,
+    "include_phase": true
+  },
+  "reward": {
+    "change_penalty": 0.1,
+    "same_color_reward": 0.1,
+    "streak_bonus": 0.02,
+    "fragmentation_weight": 0.05,
+    "front_match_weight": 0.02,
+    "use_shaping": true
+  },
+  "mask_mode": "haam",
+  "training": {
+    "total_timesteps": 3000000,
+    "n_envs": 8,
+    "learning_rate": 0.0003,
+    "lr_schedule": "constant",
+    "n_steps": 256,
+    "batch_size": 256,
+    "n_epochs": 10,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "target_kl": null,
+    "net_arch": [
+      256,
+      256,
+      256
+    ],
+    "activation": "tanh",
+    "eval_freq": 50000,
+    "device": "cpu",
+    "init_from": null
+  }
+}

@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HAAM-RL Inspector</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='4' cy='4' r='3' fill='%233b7dd8'/%3E%3Ccircle cx='12' cy='8' r='3' fill='%23d64545'/%3E%3Ccircle cx='4' cy='12' r='3' fill='%23e3b52b'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #eef0f3; --border: #d9dde3;
+  --text: #1b1f24; --muted: #5f6b7a; --accent: #2f6fd0; --pos: #2f74d0; --neg: #d9622b;
+  --ok: #2e9e5b; --warn: #c98a12; --err: #c93c3c;
+  --c1: #d64545; --c2: #3b7dd8; --c3: #e3b52b; --c4: #3aa66a; --c5: #8a5cd6; --c6: #e07b2f;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --surface: #171b21; --surface-2: #20262e; --border: #2d353f;
+    --text: #e6e9ee; --muted: #8e99a8; --accent: #5b95ea; --pos: #5b9bf0; --neg: #f08a52; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --surface: #171b21; --surface-2: #20262e; --border: #2d353f;
+  --text: #e6e9ee; --muted: #8e99a8; --accent: #5b95ea; --pos: #5b9bf0; --neg: #f08a52; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: center; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 6; }
+header h1 { font-size: 15px; margin: 0 8px 0 0; }
+header .grow { flex: 1; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
+.dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+input, select, button { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .45; cursor: default; }
+main { display: grid; gap: 12px; padding: 12px 16px 32px; grid-template-columns: 320px minmax(0, 1fr) 340px; grid-template-areas: "state net decision" "sim weights weights" "compare compare compare"; }
+@media (max-width: 1250px) { main { grid-template-columns: minmax(0,1fr) minmax(0,1fr); grid-template-areas: "net net" "state decision" "sim sim" "weights weights" "compare compare"; } }
+@media (max-width: 720px) { main { grid-template-columns: minmax(0,1fr); grid-template-areas: "state" "net" "decision" "sim" "weights" "compare"; } }
+section.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-width: 0; }
+section.panel > h2, h3.sub { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+h3.sub { margin-top: 14px; }
+h2 .right, h3 .right { margin-left: auto; text-transform: none; letter-spacing: 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.muted { color: var(--muted); } .small { font-size: 11px; } .mono { font-family: ui-monospace, Consolas, monospace; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 4px 9px; }
+.seg button.on { background: var(--accent); color: #fff; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 11px; }
+.pill.fill { border-color: var(--c2); } .pill.steady { border-color: var(--ok); } .pill.drain { border-color: var(--warn); }
+
+.car { width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; cursor: pointer; user-select: none; flex: none; }
+.car[data-c="0"] { background: transparent; border-style: dashed; color: var(--muted); }
+.car[data-c="1"] { background: var(--c1); } .car[data-c="2"] { background: var(--c2); } .car[data-c="3"] { background: var(--c3); color: #222; }
+.car[data-c="4"] { background: var(--c4); } .car[data-c="5"] { background: var(--c5); } .car[data-c="6"] { background: var(--c6); }
+.car.brush-on { outline: 2px solid var(--text); outline-offset: 1px; }
+.buffers { display: grid; grid-template-columns: auto repeat(5, 26px) auto; gap: 5px; align-items: center; }
+.lbl, .arrow { font-size: 11px; color: var(--muted); }
+.queue { display: flex; gap: 4px; flex-wrap: wrap; }
+.queue .car { width: 22px; height: 22px; font-size: 10px; }
+textarea { width: 100%; font: 11px ui-monospace, Consolas, monospace; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px; resize: vertical; }
+
+#netWrap { position: relative; }
+#net { width: 100%; height: 600px; display: block; }
+#tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.18); display: none; max-width: 300px; z-index: 3; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 6px; }
+.swatch { display: inline-block; width: 18px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+
+.grid5 { display: grid; grid-template-columns: 34px repeat(5, minmax(0, 1fr)); gap: 3px; }
+.grid5 .h { font-size: 10px; color: var(--muted); text-align: center; align-self: center; }
+.cell { position: relative; aspect-ratio: 1; border-radius: 5px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 11px; font-variant-numeric: tabular-nums; }
+.cell.blocked { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 4px, transparent 4px, transparent 8px) !important; color: var(--muted); opacity: .55; }
+.cell.filtered { border-style: dashed; border-color: var(--warn); }
+.cell.chosen { outline: 2px solid var(--text); outline-offset: 1px; font-weight: 700; }
+.cell.clickable { cursor: pointer; }
+.cell .badge { position: absolute; top: 1px; right: 3px; font-size: 9px; font-weight: 700; color: var(--warn); }
+.cell .votes { position: absolute; bottom: 1px; left: 3px; font-size: 9px; color: var(--muted); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; }
+.kv > span:nth-child(odd) { color: var(--muted); }
+.attr { display: grid; grid-template-columns: auto repeat(5, 22px); gap: 3px; align-items: center; font-size: 10px; color: var(--muted); }
+.attr .a, .attrq .a { width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 9px; color: var(--text); }
+.attrq { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; }
+
+.strip { display: flex; flex-wrap: wrap; gap: 2px; }
+.strip i { width: 11px; height: 15px; border-radius: 2px; display: inline-block; }
+.strip i.chg { box-shadow: inset 0 -3px 0 var(--text); }
+.stats { display: flex; gap: 18px; flex-wrap: wrap; margin: 6px 0 10px; }
+.stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 11px; }
+
+#heatWrap { overflow-x: auto; }
+#heat { display: block; image-rendering: pixelated; cursor: crosshair; }
+#hist { width: 100%; height: 120px; display: block; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; }
+.wgrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 900px) { .wgrid { grid-template-columns: minmax(0,1fr); } }
+.bar { height: 7px; border-radius: 2px; display: block; margin: 1px 0; }
+
+#modelPop { position: absolute; right: 16px; top: 52px; width: min(560px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.25); display: none; z-index: 7; }
+#modelPop label { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12px; }
+#modelPop .grp { margin-top: 8px; font-weight: 600; font-size: 12px; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--err); color: #fff; padding: 8px 14px; border-radius: 8px; display: none; z-index: 10; max-width: calc(100% - 32px); }
+</style>
+</head>
+<body>
+<header>
+  <h1>HAAM-RL · Inspector</h1>
+  <label class="muted small">API <input id="apiUrl" size="22" class="mono"></label>
+  <button id="connect">Conectar</button>
+  <span><span id="dot" class="dot"></span><span id="status" class="small muted">sin conexión</span></span>
+  <span class="grow"></span>
+  <span id="policyInfo" class="small"></span>
+  <label class="muted small" id="memberWrap" hidden>Red <select id="memberSel"></select></label>
+  <button id="modelsBtn">Modelos…</button>
+  <button id="themeBtn" title="Cambiar tema">◐</button>
+</header>
+<div id="modelPop">
+  <div class="row"><b>Elegir política</b><span class="grow"></span>
+    <label class="small muted">umbral voto <input id="voteThr" type="number" step="0.5" placeholder="M/2−1" style="width:72px"></label></div>
+  <div class="small muted">Marca un modelo para usarlo solo, o varios para un ensemble (votación dura/blanda del paper). Sin selección se usa la heurística.</div>
+  <div id="modelList"></div>
+  <div class="row" style="margin-top:10px"><button id="loadSel" class="primary">Cargar selección</button><button id="useHeur">Usar heurística</button><button id="closePop">Cerrar</button></div>
+  <div class="row" style="margin-top:6px;border-top:1px solid var(--border);padding-top:10px">
+    <b class="small">Planificador con anticipación</b>
+    <label class="small muted">anticipación <input id="plH" type="number" value="10" min="0" max="50" style="width:56px"></label>
+    <label class="small muted">ancho <input id="plW" type="number" value="32" min="1" max="256" style="width:56px"></label>
+    <label class="small muted">llenado <input id="plF" type="number" value="25" min="1" max="25" style="width:56px"></label>
+    <label class="small muted">red de valor <select id="plV"><option value="">ninguna (fragmentación)</option></select></label>
+    <label class="small muted">comité con la red <select id="plC"><option value="">sin comité</option></select></label>
+    <button id="usePlanner">Usar planificador</button>
+  </div>
+</div>
+
+<main>
+  <section class="panel" style="grid-area: state">
+    <h2>Estado <span class="right" id="phaseBadge"></span></h2>
+    <div class="row" id="palette"></div>
+    <div class="row" style="gap:14px">
+      <div>Entrante<br><span class="car" id="incoming" data-c="0"></span></div>
+      <div>Último pintado<br><span class="car" id="last" data-c="0"></span></div>
+    </div>
+    <div class="small muted" style="margin:4px 0 6px">Buffers FIFO: el slot 1 es el siguiente en salir hacia pintura. Clic = pintar con el pincel, clic derecho = quitar.</div>
+    <div class="buffers" id="buffers"></div>
+    <div id="upWrap" hidden>
+      <div class="small muted" style="margin:10px 0 4px">Próximas llegadas que ve el modelo (<span id="upN"></span>)</div>
+      <div class="queue" id="upcoming"></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="randomState">Aleatorio</button><button id="clearState">Vaciar</button><button id="inspectBtn" class="primary">Inspeccionar</button>
+    </div>
+    <textarea id="vec" rows="2" spellcheck="false" title="Vector de 27 valores (el mismo que envía FlexSim)"></textarea>
+    <div id="linkNote" class="small muted"></div>
+  </section>
+
+  <section class="panel" style="grid-area: net">
+    <h2>Red neuronal <span id="netName" class="small" style="text-transform:none;letter-spacing:0"></span>
+      <span class="right">
+        <span class="seg" id="branchSeg"><button data-v="policy" class="on">Actor π</button><button data-v="value">Crítico V</button></span>
+        <span class="seg" id="edgeSeg"><button data-v="weight" class="on">Pesos</button><button data-v="contrib">Peso × activación</button></span>
+        <label class="small muted">aristas top <input id="thr" type="range" min="1" max="100" value="10" style="width:80px;vertical-align:middle"> <span id="thrVal">10%</span></label>
+      </span>
+    </h2>
+    <div id="netWrap"><canvas id="net"></canvas><div id="tip"></div></div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--pos)"></i>positivo</span>
+      <span><i class="swatch" style="background:var(--neg)"></i>negativo</span>
+      <span>entrada = una posición del estado (color del vehículo); en one-hot se dibuja el peso de la unidad activa</span>
+      <span>salida tachada = acción fuera de la máscara del modelo</span>
+      <span>cursor sobre un nodo para detalles, clic para fijarlo</span>
+    </div>
+  </section>
+
+  <section class="panel" style="grid-area: decision">
+    <h2>Decisión
+      <span class="right"><span class="seg" id="probSeg"><button data-v="policy" class="on">política</button><button data-v="model">red</button><button data-v="unmasked">sin máscara</button><button data-v="logits">logits</button></span></span>
+    </h2>
+    <div class="grid5" id="actGrid"></div>
+    <div class="small muted" style="margin:6px 0 10px">Filas: buffer de entrada · columnas: buffer de salida. En llenado y vaciado solo vale la diagonal. <b style="color:var(--warn)">H</b> = heurística; borde discontinuo = físicamente válida pero fuera de la máscara; rayado = imposible.</div>
+    <div class="kv" id="decisionKv"></div>
+    <h3 class="sub">Sensibilidad de las entradas
+      <span class="right"><span class="seg" id="attrSeg"><button data-v="group_attribution" class="on">grad × x</button><button data-v="group_saliency">|gradiente|</button></span></span>
+    </h3>
+    <div id="attrBox"></div>
+  </section>
+
+  <section class="panel" style="grid-area: sim">
+    <h2>Gemelo digital · prueba manual</h2>
+    <div class="row">
+      <label class="small muted">semilla <input id="seed" type="number" value="10000" style="width:80px"></label>
+      <button id="simReset" class="primary">Reiniciar</button>
+      <span id="simPhase"></span>
+    </div>
+    <div class="row">
+      <button id="stepModel" disabled>Paso política</button>
+      <button id="stepHeur" disabled>Paso heurística</button>
+      <button id="play" disabled>▶ Auto</button>
+      <select id="speed"><option value="400">lento</option><option value="120" selected>normal</option><option value="15">rápido</option></select>
+    </div>
+    <div class="small muted">Clic en cualquier celda físicamente válida de la matriz de decisión para ejecutar esa acción a mano.</div>
+    <div class="stats">
+      <div class="stat"><b id="sStep">–</b><span>pintados</span></div>
+      <div class="stat"><b id="sChanges">–</b><span>cambios de color</span></div>
+      <div class="stat"><b id="sReward">–</b><span>recompensa</span></div>
+      <div class="stat"><b id="sLeft">–</b><span>por llegar</span></div>
+    </div>
+    <div class="small muted">Cola de llegada</div>
+    <div class="strip" id="nextStrip" style="margin:3px 0 8px"></div>
+    <div class="small muted">Secuencia pintada (subrayado = cambio de color)</div>
+    <div class="strip" id="paintStrip" style="margin-top:3px"></div>
+  </section>
+
+  <section class="panel" style="grid-area: weights">
+    <h2>Pesos por capa <span class="right"><select id="layerSel"></select></span></h2>
+    <div class="wgrid">
+      <div>
+        <div id="heatWrap"><canvas id="heat"></canvas></div>
+        <div id="heatInfo" class="small muted mono" style="min-height:18px;margin-top:4px">filas: neuronas de salida · columnas: entradas · cursor para ver el valor</div>
+      </div>
+      <div>
+        <div class="small muted">Histograma de pesos</div>
+        <canvas id="hist"></canvas>
+        <table id="statsTable" style="margin-top:8px"></table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" style="grid-area: compare">
+    <h2>Política vs heurística (mismas semillas)</h2>
+    <div class="row">
+      <label class="small muted">semilla inicial <input id="cSeed" type="number" value="10000" style="width:80px"></label>
+      <label class="small muted">escenarios <input id="cN" type="number" value="30" min="1" max="200" style="width:60px"></label>
+      <label class="small muted"><input id="cOracle" type="checkbox"> oráculo (beam search, lento)</label>
+      <button id="compareBtn" class="primary">Comparar</button>
+      <span id="cSummary" class="muted"></span>
+    </div>
+    <div id="cTable"></div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const PHASE_NAMES = { fill: "llenado", steady: "régimen", drain: "vaciado", done: "terminado" };
+
+// Global UI state
+const S = {
+  health: null, arch: null, insp: null, member: 0,
+  vec: Array(27).fill(0), upcoming: [], brush: 2,
+  branch: "policy", edgeMode: "weight", thr: 10, probMode: "policy", attrMode: "group_attribution",
+  hover: null, pinned: null, layout: null, sim: null, playing: null, layerKey: "policy:0",
+};
+
+// ------------------------------------------------------------------ API
+const base = () => $("#apiUrl").value.trim().replace(/\/+$/, "");
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const r = await fetch(base() + path, opts);
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { const j = await r.json(); detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {}
+    throw new Error(`${r.status}: ${detail}`);
+  }
+  return r.json();
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", 4500); }
+
+async function connect() {
+  store.set("haam.api", base());
+  try { await refreshPolicy(); $("#dot").className = "dot ok"; $("#status").textContent = "conectado"; }
+  catch (e) { $("#dot").className = "dot err"; $("#status").textContent = "error de conexión"; toast("No se pudo conectar con la API: " + e.message); }
+}
+async function refreshPolicy() {
+  S.health = await api("/health");
+  const h = S.health;
+  const label = h.mode === "heuristic" ? "heurística LP/CM/UCM" : h.mode === "planner" ? "planificador beam search" : h.mode === "value_planner" ? "planificador guiado por valor" : h.mode === "committee" ? "comité arbitrado por valor" : h.mode === "model" ? h.models[0].split("/").slice(-3).join("/") : `ensemble de ${h.models.length} modelos`;
+  $("#policyInfo").innerHTML = `<span class="pill">${label}</span> <span class="muted">llenado ${h.fill_target} · anticipación ${h.lookahead} · máscara ${h.mask_mode}</span>`;
+  const sel = $("#memberSel"); sel.innerHTML = "";
+  h.models.forEach((m, i) => sel.append(el("option", { value: i, textContent: `${i + 1}: ${m.split("/").slice(-3, -1).join("/")}` })));
+  $("#memberWrap").hidden = h.models.length < 2;
+  S.member = 0;
+  S.upcoming = Array.from({ length: h.lookahead }, (_, k) => S.upcoming[k] || 0);
+  buildUpcoming();
+  await loadArch();
+}
+async function loadArch() {
+  S.arch = null; S.hover = S.pinned = null;
+  if (S.health.mode === "model" || S.health.mode === "ensemble") {
+    try { S.arch = await api(`/model/architecture?member=${S.member}`); } catch (e) { toast(e.message); }
+  }
+  $("#netName").textContent = S.arch ? `· ${S.arch.parameter_count.toLocaleString("es")} parámetros · ${S.arch.config.observation.encoding}` : "";
+  fillLayerSelect(); renderWeights(); await inspect();
+}
+
+// ------------------------------------------------------------------ model picker
+async function openModels() {
+  const pop = $("#modelPop");
+  if (pop.style.display === "block") { pop.style.display = "none"; return; }
+  try {
+    const m = await api("/models"), list = $("#modelList"); list.innerHTML = "";
+    const values = $("#plV"), chosen = S.valueChoice;
+    values.innerHTML = '<option value="">ninguna (fragmentación)</option>';
+    (m.values || []).forEach((v) => values.append(el("option", { value: v.path,
+      textContent: `${v.path}${v.held_out_r2 != null ? ` (R² ${v.held_out_r2.toFixed(2)})` : ""}` })));
+    if ((m.values || []).length > 1) {
+      values.append(el("option", { value: m.values.map((v) => v.path).join(","), textContent: `promedio de las ${m.values.length} redes (juez conjunto)` }));
+    }
+    // Default: the joint judge (last option); keep the user's own choice once they made one.
+    values.value = chosen !== undefined && [...values.options].some((o) => o.value === chosen) ? chosen : values.options[values.options.length - 1].value;
+    const committee = $("#plC"), committeeChoice = committee.value;
+    committee.innerHTML = '<option value="">sin comité</option>';
+    m.models.filter((x) => x.mask_mode === "physical").forEach((x) => committee.append(el("option", { value: x.path, textContent: x.path })));
+    committee.value = [...committee.options].some((o) => o.value === committeeChoice) ? committeeChoice : "";
+    const byExp = {};
+    m.models.forEach((x) => (byExp[x.experiment] ||= []).push(x));
+    for (const [exp, items] of Object.entries(byExp)) {
+      const d = items[0];
+      list.append(el("div", { className: "grp", textContent: `${exp}` }, el("span", { className: "muted small", textContent: `  ${d.encoding}, anticipación ${d.lookahead}, máscara ${d.mask_mode}, llenado ${d.fill_target}` })));
+      for (const x of items) {
+        const cb = el("input", { type: "checkbox", value: x.path, checked: m.loaded.includes(x.path) });
+        list.append(el("label", {}, cb, el("span", { className: "mono", textContent: x.path })));
+      }
+    }
+    if (!m.models.length) list.append(el("div", { className: "muted", textContent: "No hay modelos en artifacts/. Entrena uno con scripts/train.py." }));
+    pop.style.display = "block";
+  } catch (e) { toast(e.message); }
+}
+async function loadModels(paths, planner = null) {
+  const thr = $("#voteThr").value.trim();
+  try {
+    await api("/models/load", { paths, vote_threshold: thr === "" ? null : +thr, planner });
+    $("#modelPop").style.display = "none"; await refreshPolicy();
+  } catch (e) { toast(e.message); }
+}
+
+// ------------------------------------------------------------------ state editor
+function buildPalette() {
+  const p = $("#palette"); p.innerHTML = "";
+  p.append(el("span", { className: "small muted", textContent: "Pincel" }));
+  for (let c = 0; c <= 6; c++) {
+    const e = el("span", { className: "car" + (c === S.brush ? " brush-on" : ""), textContent: c || "∅", title: c ? `color ${c}` : "vacío" });
+    e.dataset.c = c; e.onclick = () => { S.brush = c; buildPalette(); };
+    p.append(e);
+  }
+}
+function buildBuffers() {
+  const b = $("#buffers"); b.innerHTML = "";
+  ["", "sale", "", "", "", "entra", ""].forEach((t) => b.append(el("span", { className: "arrow", textContent: t })));
+  for (let i = 0; i < 5; i++) {
+    b.append(el("span", { className: "lbl", textContent: `B${i + 1}` }));
+    for (let s = 0; s < 5; s++) {
+      const e = el("span", { className: "car", id: `slot${i}_${s}` });
+      e.onclick = () => setSlot(i, s, S.brush);
+      e.oncontextmenu = (ev) => { ev.preventDefault(); setSlot(i, s, 0); };
+      b.append(e);
+    }
+    b.append(el("span", { className: "arrow", textContent: "←" }));
+  }
+}
+function buildUpcoming() {
+  $("#upWrap").hidden = S.upcoming.length === 0; $("#upN").textContent = S.upcoming.length;
+  const q = $("#upcoming"); q.innerHTML = "";
+  S.upcoming.forEach((_, k) => {
+    const e = el("span", { className: "car", id: `up${k}`, title: `llegada +${k + 1}` });
+    e.onclick = () => { S.upcoming[k] = S.brush; onManualEdit(); };
+    e.oncontextmenu = (ev) => { ev.preventDefault(); S.upcoming[k] = 0; onManualEdit(); };
+    q.append(e);
+  });
+}
+function setSlot(i, s, c) {
+  const buf = S.vec.slice(2 + i * 5, 7 + i * 5).filter((x) => x);
+  if (c === 0) buf.splice(s, 1); else if (s < buf.length) buf[s] = c; else buf.push(c);
+  for (let k = 0; k < 5; k++) S.vec[2 + i * 5 + k] = buf[k] || 0;
+  onManualEdit();
+}
+function onManualEdit() {
+  if (S.sim) { S.sim = null; stopPlay(); $("#linkNote").textContent = "Estado editado a mano: desvinculado de la simulación."; updateSimButtons(); }
+  renderState(); scheduleInspect();
+}
+function setCar(e, c) { e.dataset.c = c; e.textContent = c || ""; }
+function renderState() {
+  setCar($("#incoming"), S.vec[0]); setCar($("#last"), S.vec[1]);
+  for (let i = 0; i < 5; i++) for (let s = 0; s < 5; s++) setCar($(`#slot${i}_${s}`), S.vec[2 + i * 5 + s]);
+  S.upcoming.forEach((c, k) => setCar($(`#up${k}`), c));
+  if (document.activeElement !== $("#vec")) $("#vec").value = JSON.stringify(S.vec);
+}
+const PROBS = [0.06, 0.38, 0.29, 0.14, 0.10, 0.03];
+function sampleColor() { let r = Math.random(), a = 0; for (let i = 0; i < 6; i++) { a += PROBS[i]; if (r < a) return i + 1; } return 6; }
+function randomState() {
+  const v = [sampleColor(), sampleColor()];
+  for (let i = 0; i < 5; i++) { const n = Math.floor(Math.random() * 6); for (let s = 0; s < 5; s++) v.push(s < n ? sampleColor() : 0); }
+  S.vec = v; S.upcoming = S.upcoming.map(sampleColor); onManualEdit();
+}
+
+// ------------------------------------------------------------------ inspection
+let inspectTimer = null;
+function scheduleInspect() { clearTimeout(inspectTimer); inspectTimer = setTimeout(inspect, 120); }
+async function inspect() {
+  if (!S.health) return;
+  // The API ignores look-ahead beyond the first empty position: arrivals are a queue.
+  const upcoming = []; for (const c of S.upcoming) { if (!c) break; upcoming.push(c); }
+  try { S.insp = await api("/inspect", { state_vector: S.vec, upcoming, member: S.member }); }
+  catch (e) { S.insp = null; if (!String(e.message).startsWith("409")) toast(e.message); }
+  const ph = S.insp ? S.insp.phase : (S.vec[0] === 0 && S.vec.slice(2).every((x) => !x) ? "done" : null);
+  $("#phaseBadge").innerHTML = ph ? `<span class="pill ${ph}">fase: ${PHASE_NAMES[ph]}</span>` : "";
+  renderDecision(); drawNet();
+}
+
+// ------------------------------------------------------------------ colors
+function rgb(color) { const h = color.replace("#", ""); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)); }
+function diverge(v, max) {
+  const t = Math.max(-1, Math.min(1, max ? v / max : 0));
+  const b = rgb(css("--surface-2")), e = rgb(css(t >= 0 ? "--pos" : "--neg")), a = Math.abs(t);
+  return `rgb(${b.map((x, i) => Math.round(x + (e[i] - x) * a)).join(",")})`;
+}
+const carColor = (c) => c ? css(`--c${c}`) : null;
+
+// ------------------------------------------------------------------ network canvas
+// Input nodes are feature *groups* (one per vehicle position, plus phase / occupancy for one-hot).
+// The edge from a group to a hidden neuron uses the weight of the group's active unit, or, without
+// an inspected state, the unit with the largest |weight|. In "contribution" mode it is sum(w * x).
+const net = $("#net"), ctx = net.getContext("2d");
+const net_ = () => S.insp && S.insp.network;
+function groupEdge(W, j, g, x) {
+  let best = 0;
+  if (S.edgeMode === "contrib" && x) { for (let k = g.start; k < g.stop; k++) best += W[j][k] * x[k]; return best; }
+  if (x) { let arg = g.start; for (let k = g.start; k < g.stop; k++) if (x[k] > x[arg]) arg = k; return g.stop - g.start === 1 ? W[j][g.start] : W[j][arg]; }
+  for (let k = g.start; k < g.stop; k++) if (Math.abs(W[j][k]) > Math.abs(best)) best = W[j][k];
+  return best;
+}
+function layerValues(li) {
+  // Edge values between column li and li+1, as a [out][in] matrix over drawn nodes.
+  const L = S.arch.branches[S.branch], W = L[li].weight, n = net_();
+  if (li === 0) { const x = n ? n.input : null; return W.map((_, j) => S.arch.input_groups.map((g) => groupEdge(W, j, g, x))); }
+  const prev = n ? (S.branch === "policy" ? n.policy_layers : n.value_layers)[li - 1].post : null;
+  return W.map((row) => row.map((w, i) => S.edgeMode === "contrib" && prev ? w * prev[i] : w));
+}
+function activations() {
+  const n = net_(); if (!n) return null;
+  return [null, ...(S.branch === "policy" ? n.policy_layers : n.value_layers).map((l) => l.post)];
+}
+function computeLayout(w, h) {
+  const sizes = [S.arch.input_groups.length, ...S.arch.branches[S.branch].map((l) => l.out_features)];
+  const padX = 96, padTop = 34, padBot = 12, n = sizes.length;
+  return sizes.map((size, li) => {
+    const x = padX + (li * (w - padX * 2)) / (n - 1), gap = Math.min(18, (h - padTop - padBot) / size);
+    const y0 = padTop + ((h - padTop - padBot) - gap * (size - 1)) / 2;
+    return Array.from({ length: size }, (_, i) => ({ x, y: size === 1 ? (h + padTop) / 2 : y0 + i * gap, r: Math.max(2.5, Math.min(6, gap * 0.38)) }));
+  });
+}
+function drawNet() {
+  const dpr = window.devicePixelRatio || 1, w = net.clientWidth, h = net.clientHeight;
+  net.width = w * dpr; net.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  const muted = css("--muted"), text = css("--text"), border = css("--border");
+  if (!S.arch) {
+    ctx.fillStyle = muted; ctx.font = "13px system-ui"; ctx.textAlign = "center";
+    ctx.fillText(S.health ? `La política activa (${S.health.mode}) no es una red: carga un modelo en «Modelos…» para verla` : "Conecta la API para empezar", w / 2, h / 2);
+    S.layout = null; return;
+  }
+  if (S.arch.kind !== "mlp") {
+    ctx.fillStyle = muted; ctx.font = "13px system-ui"; ctx.textAlign = "center";
+    ctx.fillText("Red estructurada por buffers: el mismo bloque procesa cada buffer y puntúa cada par (entrada, salida).", w / 2, h / 2 - 10);
+    ctx.fillText("La decisión, la sensibilidad y todas sus matrices de pesos están en los paneles; el dibujo por capas es solo para MLP.", w / 2, h / 2 + 12);
+    S.layout = null; return;
+  }
+  const layout = computeLayout(w, h); S.layout = layout;
+  const L = S.arch.branches[S.branch], acts = activations(), n = net_(), focus = S.pinned || S.hover;
+  const pos = rgb(css("--pos")), neg = rgb(css("--neg"));
+
+  for (let li = 0; li < L.length; li++) {
+    const V = layerValues(li), abs = V.flat().map(Math.abs).sort((a, b) => b - a), max = abs[0] || 1;
+    const cut = abs[Math.min(abs.length - 1, Math.floor((abs.length * S.thr) / 100))];
+    for (let j = 0; j < V.length; j++) for (let i = 0; i < V[j].length; i++) {
+      const v = V[j][i], a = Math.abs(v) / max;
+      const linked = focus && ((focus.l === li && focus.i === i) || (focus.l === li + 1 && focus.i === j));
+      if (focus ? !linked : Math.abs(v) < cut) continue;
+      const p = layout[li][i], q = layout[li + 1][j];
+      ctx.strokeStyle = `rgba(${(v >= 0 ? pos : neg).join(",")},${focus ? 0.15 + 0.85 * a : 0.06 + 0.6 * a})`;
+      ctx.lineWidth = 0.4 + 2.2 * a;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    }
+  }
+  const titles = ["Entrada", ...L.map((l, i) => i === L.length - 1 ? (S.branch === "policy" ? "Logits π" : "V(s)") : `Oculta ${i + 1} · ${l.activation}`)];
+  ctx.font = "11px system-ui"; ctx.textAlign = "center"; ctx.fillStyle = muted;
+  layout.forEach((col, li) => ctx.fillText(`${titles[li]} (${col.length})`, col[0].x, 16));
+  const last = layout.length - 1;
+  layout.forEach((col, li) => {
+    const a = acts ? acts[li] : null;
+    const maxAbs = a && li > 0 && L[li - 1].activation !== "tanh" ? Math.max(...a.map(Math.abs)) || 1 : 1;
+    col.forEach((p, i) => {
+      let fill = css("--surface-2"), struck = false, chosen = false;
+      if (li === 0) {
+        const g = S.arch.input_groups[i];
+        if (g.kind === "color") fill = carColor(n ? n.positions[i] : 0) || css("--surface");
+        else if (n) fill = diverge(Math.max(...n.input.slice(g.start, g.stop)), 1);
+      } else if (li === last && S.branch === "policy" && n) {
+        struck = !n.model_mask[i]; chosen = n.model_action === i;
+        fill = struck ? css("--surface") : diverge(n.model_probabilities[i], 1);
+      } else if (a) fill = diverge(a[i], maxAbs);
+      const focused = focus && focus.l === li && focus.i === i;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + (chosen ? 1.5 : 0), 0, Math.PI * 2);
+      ctx.fillStyle = fill; ctx.fill();
+      ctx.lineWidth = chosen || focused ? 2 : 0.8; ctx.strokeStyle = chosen || focused ? text : border; ctx.stroke();
+      if (struck) { ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(p.x - p.r, p.y + p.r); ctx.lineTo(p.x + p.r, p.y - p.r); ctx.stroke(); }
+    });
+  });
+  ctx.font = "10px system-ui";
+  ctx.textAlign = "right"; ctx.fillStyle = muted;
+  layout[0].forEach((p, i) => ctx.fillText(S.arch.input_groups[i].label, p.x - p.r - 6, p.y + 3));
+  ctx.textAlign = "left";
+  layout[last].forEach((p, i) => {
+    let label = S.branch === "policy" ? `${Math.floor(i / 5) + 1}→${(i % 5) + 1}` : "V";
+    if (n) label += S.branch === "policy" ? (n.model_mask[i] ? `  ${(n.model_probabilities[i] * 100).toFixed(0)}%` : "") : `  ${n.value.toFixed(3)}`;
+    ctx.fillStyle = n && S.branch === "policy" && n.model_action === i ? text : muted;
+    ctx.fillText(label, p.x + p.r + 6, p.y + 3);
+  });
+}
+function nodeAt(mx, my) {
+  let best = null, bd = 1e9;
+  (S.layout || []).forEach((col, l) => col.forEach((p, i) => { const d = Math.hypot(p.x - mx, p.y - my); if (d < bd && d <= p.r + 5) { bd = d; best = { l, i }; } }));
+  return best;
+}
+function tipHtml(nd) {
+  const L = S.arch.branches[S.branch], n = net_(), last = S.layout.length - 1, fmt = (v) => (v >= 0 ? "+" : "") + v.toFixed(3);
+  if (nd.l === 0) {
+    const g = S.arch.input_groups[nd.i];
+    let h = `<b>${g.label}</b> <span class="muted">(${g.kind}, ${g.stop - g.start} unidad${g.stop - g.start > 1 ? "es" : ""})</span>`;
+    if (n) h += `<br>valor: ${g.kind === "color" ? (n.positions[nd.i] || "vacío") : n.input.slice(g.start, g.stop).map((v) => v.toFixed(2)).join(" ")}<br>grad × x: ${n.group_attribution[nd.i].toFixed(4)}`;
+    return h;
+  }
+  const layer = L[nd.l - 1], layers = n ? (S.branch === "policy" ? n.policy_layers : n.value_layers) : null;
+  let h = `<b>${nd.l === last ? (S.branch === "policy" ? S.arch.action_labels[nd.i] : "Valor V(s)") : `Neurona ${nd.i} · capa ${nd.l}`}</b><br>bias: ${layer.bias[nd.i].toFixed(4)}`;
+  if (layers) h += `<br>pre-activación: ${layers[nd.l - 1].pre[nd.i].toFixed(4)}<br>salida: ${layers[nd.l - 1].post[nd.i].toFixed(4)}`;
+  if (nd.l === last && S.branch === "policy" && n) h += `<br>prob. de la red: ${(n.model_probabilities[nd.i] * 100).toFixed(2)}%<br>sin máscara: ${(n.unmasked_probabilities[nd.i] * 100).toFixed(2)}%<br>máscara: ${n.model_mask[nd.i] ? "permitida" : "bloqueada"}`;
+  const V = layerValues(nd.l - 1)[nd.i];
+  const names = nd.l === 1 ? S.arch.input_groups.map((g) => g.label) : V.map((_, i) => `n${i}`);
+  const top = V.map((v, i) => ({ i, v })).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 6);
+  h += `<br><span class="muted">Entradas más fuertes (${S.edgeMode === "contrib" && n ? "w·a" : "w"}):</span><br>` + top.map((t) => `<span class="mono">${names[t.i].padEnd(9, " ")} ${fmt(t.v)}</span>`).join("<br>");
+  return h;
+}
+net.addEventListener("mousemove", (e) => {
+  const r = net.getBoundingClientRect(), nd = S.arch ? nodeAt(e.clientX - r.left, e.clientY - r.top) : null, tip = $("#tip");
+  const changed = JSON.stringify(nd) !== JSON.stringify(S.hover); S.hover = nd;
+  if (nd) {
+    tip.innerHTML = tipHtml(nd); tip.style.display = "block";
+    tip.style.left = Math.min(e.clientX - r.left + 14, r.width - tip.offsetWidth - 4) + "px";
+    tip.style.top = Math.min(e.clientY - r.top + 14, r.height - tip.offsetHeight - 4) + "px";
+  } else tip.style.display = "none";
+  if (changed && !S.pinned) drawNet();
+});
+net.addEventListener("mouseleave", () => { S.hover = null; $("#tip").style.display = "none"; if (!S.pinned) drawNet(); });
+net.addEventListener("click", () => { S.pinned = S.hover && JSON.stringify(S.hover) !== JSON.stringify(S.pinned) ? S.hover : null; drawNet(); });
+new ResizeObserver(() => drawNet()).observe(net);
+
+// ------------------------------------------------------------------ decision panel
+function renderDecision() {
+  const g = $("#actGrid"); g.innerHTML = "";
+  g.append(el("span", { className: "h", textContent: "in \\ out" }));
+  for (let o = 0; o < 5; o++) g.append(el("span", { className: "h", textContent: `B${o + 1}` }));
+  const I = S.insp, n = net_();
+  let vals = null;
+  if (I) vals = S.probMode === "policy" || !n ? I.probabilities : S.probMode === "model" ? n.model_probabilities : S.probMode === "unmasked" ? n.unmasked_probabilities : n.logits;
+  const isLogit = S.probMode === "logits" && n, maxL = isLogit ? Math.max(...vals.map(Math.abs)) : 1;
+  const votes = I && I.members.length ? I.members.reduce((acc, m) => (acc[m.action_id] = (acc[m.action_id] || 0) + 1, acc), {}) : {};
+  const simPhys = S.sim && !S.sim.done ? S.sim.physical_mask : null;
+  for (let i = 0; i < 5; i++) {
+    g.append(el("span", { className: "h", textContent: `B${i + 1}` }));
+    for (let o = 0; o < 5; o++) {
+      const a = i * 5 + o, c = el("div", { className: "cell" });
+      if (I) {
+        const v = vals[a];
+        c.style.background = diverge(v, isLogit ? maxL : 1);
+        c.textContent = isLogit ? v.toFixed(1) : v >= 0.005 ? (v * 100).toFixed(0) + "%" : "·";
+        if (!I.physical_mask[a]) c.classList.add("blocked");
+        else if (!I.policy_mask[a]) c.classList.add("filtered");
+        if (I.action_id === a) c.classList.add("chosen");
+        if (I.heuristic_action_id === a) c.append(el("span", { className: "badge", textContent: "H" }));
+        if (votes[a]) c.append(el("span", { className: "votes", textContent: `${votes[a]}v` }));
+        if (simPhys && simPhys[a]) { c.classList.add("clickable"); c.title = "Ejecutar esta acción en el gemelo"; c.onclick = () => simStep({ mode: "action", action_id: a }); }
+      }
+      g.append(c);
+    }
+  }
+  const kv = $("#decisionKv");
+  if (!I) { kv.innerHTML = `<span>estado</span><span>${S.health ? "sin decisión (¿estado terminado?)" : "sin conexión"}</span>`; $("#attrBox").innerHTML = ""; return; }
+  const valid = I.policy_mask.filter(Boolean).length, phys = I.physical_mask.filter(Boolean).length;
+  const ent = -I.probabilities.reduce((s, p) => s + (p > 0 ? p * Math.log(p) : 0), 0);
+  const d = I.decoded_action, ph = I.phase;
+  const what = ph === "fill" ? `guarda en B${d.input_buffer + 1}` : ph === "drain" ? `pinta desde B${d.output_buffer + 1}` : `pinta desde B${d.output_buffer + 1}, guarda en B${d.input_buffer + 1}`;
+  let h = `<span>acción</span><span><b>${I.action_id}</b> · ${what}</span>
+    <span>heurística</span><span>${I.heuristic_action_id} · ${I.heuristic_action_id === I.action_id ? "coincide" : "<b style='color:var(--warn)'>difiere</b>"}</span>
+    <span>válidas</span><span>${valid} en la máscara / ${phys} físicas</span>
+    <span>entropía</span><span>${ent.toFixed(3)} nats (máx ${Math.log(Math.max(valid, 1)).toFixed(3)})</span>`;
+  if (n) h += `<span>V(s)</span><span>${n.value.toFixed(4)}</span>`;
+  if (I.details && I.details.vote_mode) h += `<span>votación</span><span>${I.details.vote_mode === "hard" ? "dura" : "blanda"} · ${I.details.top_count} votos vs umbral ${I.details.threshold}</span>`;
+  kv.innerHTML = h;
+  renderAttr();
+}
+function renderAttr() {
+  const n = net_(), box = $("#attrBox"); box.innerHTML = "";
+  if (!n) { box.append(el("div", { className: "small muted", textContent: "Disponible con un modelo cargado." })); return; }
+  const v = n[S.attrMode], max = Math.max(...v.map(Math.abs)) || 1, groups = S.arch.input_groups;
+  const cell = (k) => { const c = n.positions[k], d = el("span", { className: "a", textContent: groups[k].kind === "color" ? (c || "") : groups[k].label.slice(0, 3), title: `${groups[k].label}: ${v[k].toFixed(4)}` }); d.style.background = diverge(v[k], max); return d; };
+  const grid = el("div", { className: "attr" });
+  grid.append(el("span", { textContent: "ent / últ" }), cell(0), cell(1), el("span"), el("span"), el("span"));
+  for (let b = 0; b < 5; b++) { grid.append(el("span", { textContent: `B${b + 1}` })); for (let s = 0; s < 5; s++) grid.append(cell(2 + b * 5 + s)); }
+  box.append(grid);
+  if (groups.length > 27) {
+    const q = el("div", { className: "attrq" });
+    for (let k = 27; k < groups.length; k++) q.append(cell(k));
+    box.append(el("div", { className: "small muted", style: "margin-top:6px", textContent: "anticipación y extras" }), q);
+  }
+}
+
+// ------------------------------------------------------------------ twin
+function updateSimButtons() {
+  const active = !!S.sim && !S.sim.done;
+  ["#stepModel", "#stepHeur", "#play"].forEach((s) => $(s).disabled = !active);
+  $("#play").textContent = S.playing ? "■ Parar" : "▶ Auto";
+}
+function strip(target, colors, markChanges) {
+  target.innerHTML = "";
+  colors.forEach((c, k) => { const i = el("i", { title: `color ${c}` }); i.style.background = carColor(c); if (markChanges && k > 0 && c !== colors[k - 1]) i.className = "chg"; target.append(i); });
+}
+function applySim(snap) {
+  S.sim = snap; S.vec = snap.state_vector.slice();
+  S.upcoming = S.upcoming.map((_, k) => snap.remaining_arrivals[k] || 0);
+  $("#sStep").textContent = snap.painted.length; $("#sChanges").textContent = snap.color_changes;
+  $("#sReward").textContent = snap.total_reward.toFixed(2); $("#sLeft").textContent = snap.remaining_arrivals.length + (snap.state_vector[0] ? 1 : 0);
+  $("#simPhase").innerHTML = `<span class="pill ${snap.phase}">${PHASE_NAMES[snap.phase]}</span>`;
+  strip($("#nextStrip"), [snap.state_vector[0], ...snap.remaining_arrivals].filter(Boolean).slice(0, 60), false);
+  strip($("#paintStrip"), snap.painted, true);
+  $("#linkNote").textContent = snap.done ? "Episodio terminado." : `Vinculado a la simulación ${snap.session_id}.`;
+  renderState(); updateSimButtons();
+  if (snap.done) { stopPlay(); S.insp = null; renderDecision(); drawNet(); } else inspect();
+}
+async function simReset() { stopPlay(); try { applySim(await api("/sim/reset", { seed: +$("#seed").value })); } catch (e) { toast(e.message); } }
+async function simStep(body) {
+  if (!S.sim || S.sim.done) return;
+  try { applySim(await api(`/sim/${S.sim.session_id}/step`, body)); } catch (e) { stopPlay(); toast(e.message); }
+}
+function stopPlay() { if (S.playing) { clearTimeout(S.playing); S.playing = null; } updateSimButtons(); }
+function togglePlay() {
+  if (S.playing) return stopPlay();
+  const tick = async () => { await simStep({ mode: "model" }); if (S.playing && S.sim && !S.sim.done) S.playing = setTimeout(tick, +$("#speed").value); };
+  S.playing = setTimeout(tick, 0); updateSimButtons();
+}
+
+// ------------------------------------------------------------------ weights panel
+// Every weight matrix of the loaded network, in one shape for both kinds of network.
+function weightLayers() {
+  if (!S.arch) return [];
+  if (S.arch.kind !== "mlp") return S.arch.matrices.map((m, k) => ({
+    key: `m:${k}`, label: `${m.name} (${m.shape[0]}×${m.shape[1]})`, short: m.name.replace("mlp_extractor.", ""),
+    weight: m.weight, stats: m.weight_stats, src: (c) => `in${c}`, dst: (r) => `out${r}`,
+  }));
+  const out = [];
+  for (const [b, layers] of Object.entries(S.arch.branches)) layers.forEach((l, i) => out.push({
+    key: `${b}:${i}`, label: `${b === "policy" ? "Actor" : "Crítico"} · capa ${i + 1} (${l.in_features}→${l.out_features}, ${l.activation})`,
+    short: `${b === "policy" ? "π" : "V"}${i + 1}`, weight: l.weight, stats: l.weight_stats,
+    src: (c) => i === 0 ? S.arch.input_labels[c] : `n${c}`,
+    dst: (r) => i === layers.length - 1 ? (b === "policy" ? S.arch.action_labels[r] : "V") : `n${r}`,
+  }));
+  return out;
+}
+function fillLayerSelect() {
+  const sel = $("#layerSel"), layers = weightLayers(); sel.innerHTML = "";
+  if (!layers.length) { $("#statsTable").innerHTML = ""; return; }
+  layers.forEach((l) => sel.append(el("option", { value: l.key, textContent: l.label })));
+  if (!layers.some((l) => l.key === S.layerKey)) S.layerKey = layers[0].key;
+  sel.value = S.layerKey;
+  let h = "<tr><th>Capa</th><th>forma</th><th>media</th><th>σ</th><th>min</th><th>max</th><th>‖W‖</th></tr>";
+  for (const l of layers) {
+    const s = l.stats;
+    h += `<tr><td>${l.short}</td><td>${l.weight.length}×${l.weight[0].length}</td><td>${s.mean.toFixed(3)}</td><td>${s.std.toFixed(3)}</td><td>${s.min.toFixed(2)}</td><td>${s.max.toFixed(2)}</td><td>${s.l2.toFixed(2)}</td></tr>`;
+  }
+  $("#statsTable").innerHTML = h;
+}
+function renderWeights() {
+  const heat = $("#heat"), hist = $("#hist"), layer = weightLayers().find((l) => l.key === S.layerKey);
+  if (!layer) { heat.width = heat.height = 0; hist.getContext("2d").clearRect(0, 0, hist.width, hist.height); return; }
+  const W = layer.weight, rows = W.length, cols = W[0].length;
+  const avail = $("#heatWrap").clientWidth || 600, cell = Math.max(2, Math.floor(Math.min(avail / cols, 420 / rows)));
+  heat.width = cols * cell; heat.height = rows * cell;
+  const hc = heat.getContext("2d"), max = Math.max(layer.stats.max, -layer.stats.min);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { hc.fillStyle = diverge(W[r][c], max); hc.fillRect(c * cell, r * cell, cell, cell); }
+  heat.onmousemove = (e) => {
+    const rect = heat.getBoundingClientRect(), c = Math.floor((e.clientX - rect.left) / cell), r = Math.floor((e.clientY - rect.top) / cell);
+    if (r < 0 || c < 0 || r >= rows || c >= cols) return;
+    $("#heatInfo").textContent = `${layer.src(c)} → ${layer.dst(r)}: w = ${W[r][c].toFixed(5)}`;
+  };
+  const dpr = window.devicePixelRatio || 1, w = hist.clientWidth, h = hist.clientHeight;
+  hist.width = w * dpr; hist.height = h * dpr; const g = hist.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const bins = 40, lo = layer.stats.min, hi = layer.stats.max, cnt = Array(bins).fill(0);
+  W.flat().forEach((v) => cnt[Math.min(bins - 1, Math.floor(((v - lo) / (hi - lo || 1)) * bins))]++);
+  const cmax = Math.max(...cnt), bw = w / bins;
+  cnt.forEach((k, j) => { g.fillStyle = diverge(lo + ((j + 0.5) * (hi - lo)) / bins, max); const bh = (k / cmax) * (h - 16); g.fillRect(j * bw + 0.5, h - 14 - bh, bw - 1, bh); });
+  g.fillStyle = css("--muted"); g.font = "10px system-ui";
+  g.textAlign = "left"; g.fillText(lo.toFixed(2), 0, h - 2); g.textAlign = "right"; g.fillText(hi.toFixed(2), w, h - 2);
+  g.textAlign = "center"; g.fillText("0", ((0 - lo) / (hi - lo || 1)) * w, h - 2);
+}
+new ResizeObserver(() => renderWeights()).observe($("#heatWrap"));
+
+// ------------------------------------------------------------------ comparison
+async function compare() {
+  $("#compareBtn").disabled = true; $("#cSummary").textContent = "ejecutando…";
+  try {
+    const r = await api("/sim/compare", { first_seed: +$("#cSeed").value, scenarios: +$("#cN").value, oracle: $("#cOracle").checked });
+    const m = r.means, wins = r.rows.filter((x) => x.model < x.heuristic).length, ties = r.rows.filter((x) => x.model === x.heuristic).length;
+    $("#cSummary").innerHTML = `política <b>${m.model.toFixed(2)}</b> vs heurística <b>${m.heuristic.toFixed(2)}</b>${m.oracle !== undefined ? ` · oráculo <b>${m.oracle.toFixed(2)}</b>` : ""} cambios · reducción <b>${r.reduction_pct.toFixed(1)}%</b> · gana ${wins}, empata ${ties}, pierde ${r.rows.length - wins - ties}`;
+    const mx = Math.max(...r.rows.flatMap((x) => [x.model, x.heuristic]));
+    let h = `<table><tr><th>semilla</th><th>heurística</th><th>política</th>${m.oracle !== undefined ? "<th>oráculo</th>" : ""}<th>Δ</th><th style="width:40%"></th><th></th></tr>`;
+    for (const x of r.rows) {
+      const d = x.heuristic - x.model;
+      h += `<tr><td>${x.seed}</td><td>${x.heuristic}</td><td>${x.model}</td>${x.oracle !== undefined ? `<td>${x.oracle}</td>` : ""}
+        <td style="color:${d > 0 ? "var(--ok)" : d < 0 ? "var(--err)" : "var(--muted)"}">${d > 0 ? "−" + d : d < 0 ? "+" + -d : "0"}</td>
+        <td style="text-align:left"><span class="bar" style="width:${(x.heuristic / mx) * 100}%;background:var(--muted)"></span><span class="bar" style="width:${(x.model / mx) * 100}%;background:var(--accent)"></span>${x.oracle !== undefined ? `<span class="bar" style="width:${(x.oracle / mx) * 100}%;background:var(--ok)"></span>` : ""}</td>
+        <td><button data-seed="${x.seed}" class="small">abrir</button></td></tr>`;
+    }
+    $("#cTable").innerHTML = h + "</table><div class='small muted' style='margin-top:6px'>Gris: heurística · azul: política cargada · verde: oráculo con información perfecta. «abrir» carga esa semilla en el gemelo.</div>";
+    $("#cTable").querySelectorAll("button[data-seed]").forEach((btn) => btn.onclick = () => { $("#seed").value = btn.dataset.seed; simReset(); window.scrollTo({ top: 0, behavior: "smooth" }); });
+  } catch (e) { toast(e.message); $("#cSummary").textContent = ""; }
+  $("#compareBtn").disabled = false;
+}
+
+// ------------------------------------------------------------------ wiring
+function seg(id, key, after) {
+  $(id).querySelectorAll("button").forEach((b) => b.onclick = () => {
+    $(id).querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); S[key] = b.dataset.v; after();
+  });
+}
+seg("#branchSeg", "branch", () => { S.hover = S.pinned = null; drawNet(); });
+seg("#edgeSeg", "edgeMode", drawNet);
+seg("#probSeg", "probMode", renderDecision);
+seg("#attrSeg", "attrMode", renderAttr);
+$("#thr").oninput = (e) => { S.thr = +e.target.value; $("#thrVal").textContent = S.thr + "%"; drawNet(); };
+$("#connect").onclick = connect;
+$("#modelsBtn").onclick = openModels;
+$("#closePop").onclick = () => $("#modelPop").style.display = "none";
+$("#loadSel").onclick = () => loadModels([...$("#modelList").querySelectorAll("input:checked")].map((c) => c.value));
+$("#useHeur").onclick = () => loadModels([]);
+$("#plV").onchange = (e) => { S.valueChoice = e.target.value; };
+$("#usePlanner").onclick = () => loadModels([], { horizon: +$("#plH").value, width: +$("#plW").value,
+  fill_target: +$("#plF").value, value: $("#plV").value || null,
+  committee_network: $("#plV").value && $("#plC").value ? $("#plC").value : null });
+$("#memberSel").onchange = (e) => { S.member = +e.target.value; loadArch(); };
+$("#incoming").onclick = () => { S.vec[0] = S.brush; onManualEdit(); };
+$("#last").onclick = () => { S.vec[1] = S.brush; onManualEdit(); };
+$("#randomState").onclick = randomState;
+$("#clearState").onclick = () => { S.vec = Array(27).fill(0); S.upcoming = S.upcoming.map(() => 0); onManualEdit(); };
+$("#inspectBtn").onclick = inspect;
+$("#vec").onchange = (e) => {
+  try { const v = JSON.parse(e.target.value); if (!Array.isArray(v) || v.length !== 27 || v.some((x) => !Number.isInteger(x) || x < 0 || x > 6)) throw 0; S.vec = v; onManualEdit(); }
+  catch { toast("El vector debe ser una lista JSON de 27 enteros entre 0 y 6"); renderState(); }
+};
+$("#simReset").onclick = simReset;
+$("#stepModel").onclick = () => simStep({ mode: "model" });
+$("#stepHeur").onclick = () => simStep({ mode: "heuristic" });
+$("#play").onclick = togglePlay;
+$("#compareBtn").onclick = compare;
+$("#layerSel").onchange = (e) => { S.layerKey = e.target.value; renderWeights(); };
+$("#themeBtn").onclick = () => {
+  const root = document.documentElement, dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark"; store.set("haam.theme", root.dataset.theme);
+  drawNet(); renderWeights(); renderDecision();
+};
+
+(function init() {
+  const theme = store.get("haam.theme", ""); if (theme) document.documentElement.dataset.theme = theme;
+  $("#apiUrl").value = store.get("haam.api", location.protocol.startsWith("http") ? location.origin : "http://127.0.0.1:8000");
+  buildPalette(); buildBuffers();
+  S.vec = [3, 2, 2, 2, 3, 0, 0, 3, 3, 0, 0, 0, 1, 4, 0, 0, 0, 2, 0, 0, 0, 0, 5, 2, 2, 0, 0];
+  renderState(); renderDecision(); drawNet(); connect();
+})();
+</script>
+</body>
+</html>

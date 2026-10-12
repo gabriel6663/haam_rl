@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haam-rl-twin"
-version = "0.1.0"
-description = "Digital twin and HAAM-RL training for paint-shop resequencing"
+version = "0.4.0"
+description = "HAAM-RL for paint-shop color resequencing: digital twin, training, evaluation, HTTP bridge and web inspector"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.115",
@@ -19,7 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.8"]
+dev = ["httpx>=0.27", "pytest>=8.0", "ruff>=0.8"]
+docs = ["matplotlib>=3.8", "playwright>=1.40"]  # scripts/build_publication.py; then: playwright install chromium
 
 [tool.setuptools.packages.find]
 where = ["src"]

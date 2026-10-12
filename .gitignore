@@ -1,5 +1,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
-artifacts/
 *.pyc
+*.egg-info/
+artifacts/
+.playwright-mcp/

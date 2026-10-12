@@ -1,0 +1,47 @@
+{
+  "name": "fill24_onehot_lookahead_haam",
+  "plant": {
+    "vehicles": 100,
+    "fill_target": 24,
+    "color_probabilities": [
+      0.06,
+      0.38,
+      0.29,
+      0.14,
+      0.1,
+      0.03
+    ]
+  },
+  "observation": {
+    "encoding": "onehot",
+    "lookahead": 10,
+    "include_phase": true
+  },
+  "reward": {
+    "change_penalty": 0.1,
+    "same_color_reward": 0.1,
+    "streak_bonus": 0.02,
+    "fragmentation_weight": 0.05,
+    "front_match_weight": 0.02,
+    "use_shaping": true
+  },
+  "mask_mode": "haam",
+  "training": {
+    "total_timesteps": 500000,
+    "n_envs": 8,
+    "learning_rate": 0.0003,
+    "n_steps": 256,
+    "batch_size": 256,
+    "n_epochs": 10,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "ent_coef": 0.01,
+    "net_arch": [
+      64,
+      64
+    ],
+    "activation": "tanh",
+    "eval_freq": 20000,
+    "device": "cpu"
+  }
+}

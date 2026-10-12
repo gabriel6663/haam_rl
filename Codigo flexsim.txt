@@ -1,0 +1,348 @@
+/** Custom Code - HAAM-RL **/
+
+// ============================================================
+// 1. Localizar objetos
+// ============================================================
+
+Object waitingQueue = Model.find("Waiting_Queue");
+if (!waitingQueue) {
+    waitingQueue = Model.find("Queue1");
+}
+
+Object maquina = Model.find("Painting_Machine");
+if (!maquina) {
+    maquina = Model.find("Processor1");
+}
+
+if (!waitingQueue || !maquina) {
+    print("ERROR: No se encontró Waiting_Queue o Painting_Machine.");
+    return 0;
+}
+
+// ============================================================
+// 2. Inicializar tabla KPI
+// ============================================================
+
+Table kpiTab = Table("KPI_Model");
+
+if (time() < 4) {
+    kpiTab[1][1] = 0;
+    kpiTab[1][2] = 0;
+}
+
+int ultimoPintado = kpiTab[1]["ColorActual"];
+int cambiosAcumulados = kpiTab[1]["CambiosColor"];
+
+// ============================================================
+// 3. Verificar si existen vehículos procesables
+// ============================================================
+
+int totalVehiculosEnBuffers = 0;
+
+for (int b = 1; b <= 5; b++) {
+
+    Object bufferCheck = Model.find(
+        "Buffer_Queue" + string.fromNum(b)
+    );
+
+    if (bufferCheck) {
+        totalVehiculosEnBuffers =
+            totalVehiculosEnBuffers + content(bufferCheck);
+    }
+}
+
+// No se puede ejecutar una acción si no hay nada para extraer
+if (totalVehiculosEnBuffers == 0) {
+
+    if (content(waitingQueue) == 0) {
+        print("Fin del episodio: no quedan vehículos.");
+        stop();
+        return 0;
+    }
+    else {
+
+    Object queue1 = Model.find("Buffer_Queue1");
+
+    if (queue1 && queue1 != waitingQueue) {
+
+        treenode itemEsperando = rank(waitingQueue, 1);
+
+        if (itemEsperando) {
+            moveobject(itemEsperando, queue1);
+
+            print(
+                "Vehículo movido desde Waiting_Queue hacia Queue1."
+            );
+        }
+    }
+    else {
+        print("ERROR: No se encontró Queue1 o coincide con Waiting_Queue.");
+    }
+}
+
+    return 0;
+}
+
+// ============================================================
+// 4. Construir el vector de estado
+//
+// Posición 0: color entrante
+// Posición 1: último color pintado
+// Posiciones 2..26: cinco buffers de cinco posiciones
+// ============================================================
+
+string stateStr = "[";
+
+int colorEntrante = 0;
+
+if (content(waitingQueue) > 0) {
+
+    treenode itemEntrante = rank(waitingQueue, 1);
+
+    if (itemEntrante) {
+        colorEntrante = getlabel(itemEntrante, "Type");
+    }
+}
+
+stateStr = stateStr + string.fromNum(colorEntrante);
+stateStr = stateStr + "," + string.fromNum(ultimoPintado);
+
+// Leer los cinco buffers
+for (int b = 1; b <= 5; b++) {
+
+    Object buffer = Model.find(
+        "Buffer_Queue" + string.fromNum(b)
+    );
+
+    int cantidadAutos = 0;
+
+    if (buffer) {
+        cantidadAutos = content(buffer);
+    }
+
+    for (int slot = 1; slot <= 5; slot++) {
+
+        int colorSlot = 0;
+
+        if (buffer && cantidadAutos >= slot) {
+
+            treenode itemSlot = rank(buffer, slot);
+
+            if (itemSlot) {
+                colorSlot = getlabel(itemSlot, "Type");
+            }
+        }
+
+        stateStr = stateStr + "," + string.fromNum(colorSlot);
+    }
+}
+
+stateStr = stateStr + "]";
+
+// ============================================================
+// 5. Diagnóstico del estado enviado
+// ============================================================
+
+print("Estado enviado a Python: ", stateStr);
+
+print(
+    "Waiting=",
+    content(waitingQueue),
+    " B1=",
+    content(Model.find("Buffer_Queue1")),
+    " B2=",
+    content(Model.find("Buffer_Queue2")),
+    " B3=",
+    content(Model.find("Buffer_Queue3")),
+    " B4=",
+    content(Model.find("Buffer_Queue4")),
+    " B5=",
+    content(Model.find("Buffer_Queue5"))
+);
+
+// ============================================================
+// 6. Petición HTTP a FastAPI
+// ============================================================
+
+Http.Request request;
+
+request.host = "127.0.0.1";
+request.port = 8000;
+request.path = "/step";
+request.method = Http.Method.Post;
+request.headers = "Content-Type: application/json\r\n";
+request.timeout = 5000;
+
+request.data =
+    "{\"state_vector\":" + stateStr + "}";
+
+// ============================================================
+// 7. Ejecutar petición
+// ============================================================
+
+Http.Response response;
+response = request.sendAndWait();
+
+// Estado sin acciones válidas
+if (response.statusCode == 409) {
+
+    print(
+        "Python devolvió 409: no hay acciones válidas para este estado."
+    );
+
+    return 0;
+}
+
+// Otro error HTTP
+if (response.statusCode != 200) {
+
+    print(
+        "ERROR HTTP recibido desde Python: ",
+        response.statusCode
+    );
+
+    return 0;
+}
+
+// ============================================================
+// 8. Leer respuesta JSON
+// ============================================================
+
+Map jsonResponse = JSON.parse(response.value);
+
+int accionRecibida = jsonResponse["action_id"];
+
+if (accionRecibida < 0 || accionRecibida > 24) {
+
+    print(
+        "ERROR: action_id inválido recibido desde Python: ",
+        accionRecibida
+    );
+
+    return 0;
+}
+
+// ============================================================
+// 9. Decodificar la acción
+//
+// action_id = bufferEntrada * 5 + bufferSalida
+// ============================================================
+
+int bufferEntradaNumero = (accionRecibida / 5) + 1;
+int bufferSalidaNumero = (accionRecibida % 5) + 1;
+
+Object bufferEntrada = Model.find(
+    "Buffer_Queue" + string.fromNum(bufferEntradaNumero)
+);
+
+Object bufferSalida = Model.find(
+    "Buffer_Queue" + string.fromNum(bufferSalidaNumero)
+);
+
+if (!bufferEntrada || !bufferSalida) {
+
+    print("ERROR: No se encontró el buffer seleccionado.");
+    return 0;
+}
+
+// ============================================================
+// 10. Validar acción contra el estado actual
+// ============================================================
+
+if (content(bufferSalida) <= 0) {
+
+    print(
+        "ERROR: El buffer de salida está vacío: Buffer_Queue",
+        bufferSalidaNumero
+    );
+
+    return 0;
+}
+
+if (
+    colorEntrante > 0 &&
+    bufferEntradaNumero != bufferSalidaNumero &&
+    content(bufferEntrada) >= 5
+) {
+
+    print(
+        "ERROR: El buffer de entrada está lleno: Buffer_Queue",
+        bufferEntradaNumero
+    );
+
+    return 0;
+}
+
+// ============================================================
+// 11. Extraer vehículo del buffer de salida
+// ============================================================
+
+treenode itemAJalar = first(bufferSalida);
+
+if (!itemAJalar) {
+
+    print("ERROR: No se pudo obtener el vehículo de salida.");
+    return 0;
+}
+
+int colorAutoNuevo = getlabel(itemAJalar, "Type");
+
+// ============================================================
+// 12. Actualizar KPI
+// ============================================================
+
+if (
+    ultimoPintado > 0 &&
+    colorAutoNuevo != ultimoPintado
+) {
+    cambiosAcumulados = cambiosAcumulados + 1;
+    kpiTab[1]["CambiosColor"] = cambiosAcumulados;
+}
+
+kpiTab[1]["ColorActual"] = colorAutoNuevo;
+
+// ============================================================
+// 13. Imprimir información de la decisión
+// ============================================================
+
+print("------------------------------------------------------------");
+print("DECISIÓN DE LA IA RECIBIDA DESDE PYTHON");
+print("ID de acción: ", accionRecibida);
+print(
+    "Buffer de entrada: Buffer_Queue",
+    bufferEntradaNumero
+);
+print(
+    "Buffer de salida: Buffer_Queue",
+    bufferSalidaNumero
+);
+print("Color entrante: ", colorEntrante);
+print("Color pintado: ", colorAutoNuevo);
+print(
+    "Cambios acumulados: ",
+    cambiosAcumulados
+);
+print("------------------------------------------------------------");
+
+// ============================================================
+// 14. Mover vehículo de salida a la máquina
+// ============================================================
+if (totalVehiculosEnBuffers == 25  || content(waitingQueue) == 0 || bufferSalida == bufferEntrada)  {
+	maquina.input.open();
+	moveobject(itemAJalar, maquina);
+}
+// ============================================================
+// 15. Mover vehículo entrante al buffer de entrada
+// ============================================================
+
+if (
+    colorEntrante > 0 &&
+    content(waitingQueue) > 0
+) {
+
+    treenode itemEntrante = rank(waitingQueue, 1);
+
+    if (itemEntrante) {
+        moveobject(itemEntrante, bufferEntrada);
+    }
+}
