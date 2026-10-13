@@ -11,7 +11,9 @@
  * Vehicles carry their color (1..6) in the label "Type".
  */
 
-int LOOKAHEAD = 10;          // vehicles behind the waiting one sent to the API (extra ones are ignored)
+int TOTAL_VEHICLES = 100;    // vehicles in one episode; the episode ends when all of them are painted
+int LOOKAHEAD = 0;           // vehicles behind the waiting one sent to the API; 0 = only the next car is known
+                             // (set it to 10 only if the plant really knows the queue in advance)
 string API_HOST = "127.0.0.1";
 int API_PORT = 8000;
 
@@ -38,16 +40,27 @@ for (int b = 1; b <= 5; b++) {
 
 // ------------------------------------------------------------------ 2. KPI table (reset at model start)
 Table kpi = Table("KPI_Model");
+treenode paintedLabel = machine.labels.assert("HAAM_Painted", 0);  // vehicles this trigger sent to paint
 if (time() < 4) {
     kpi[1]["ColorActual"] = 0;
     kpi[1]["CambiosColor"] = 0;
+    paintedLabel.value = 0;
 }
 int lastPainted = kpi[1]["ColorActual"];
 int colorChanges = kpi[1]["CambiosColor"];
+int paintedCount = paintedLabel.value;
 
-if (content(waitingQueue) == 0 && stored == 0) {
-    print("End of episode: no vehicles left. Color changes: ", colorChanges);
+if (paintedCount >= TOTAL_VEHICLES) {
+    print("End of episode: ", paintedCount, " vehicles painted. Color changes: ", colorChanges);
     stop();
+    return 0;
+}
+
+// Vehicles arrive over time. An empty Waiting_Queue only means "drain" when every vehicle of the
+// episode has already arrived; before that, wait for the next arrival instead of painting or stopping.
+int arrived = paintedCount + stored + content(waitingQueue);
+if (content(waitingQueue) == 0 && arrived < TOTAL_VEHICLES) {
+    print("HAAM-RL waiting for arrivals: ", arrived, " of ", TOTAL_VEHICLES, " arrived, ", stored, " in buffers");
     return 0;
 }
 
@@ -124,6 +137,7 @@ if (extract) {
         kpi[1]["CambiosColor"] = colorChanges;
     }
     kpi[1]["ColorActual"] = painted;
+    paintedLabel.value = paintedCount + 1;
 }
 
 // ------------------------------------------------------------------ 7. Then store the waiting vehicle

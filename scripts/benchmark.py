@@ -55,6 +55,10 @@ def main() -> None:
     parser.add_argument("--value", nargs="*", default=[],
                         help="value network file(s) for the value-guided planner; comma-separated files form one averaged judge")
     parser.add_argument("--committee", type=Path, help="network zip: also time the committee (needs --value)")
+    parser.add_argument("--planner-horizons", type=int, nargs="*", default=[10, 20],
+                        help="look-ahead of the plain planners to time (0 = only the next car is known)")
+    parser.add_argument("--value-horizons", type=int, nargs="+", default=[10],
+                        help="look-ahead of the value-guided planner (and committee) to time")
     parser.add_argument("--scenarios", type=int, default=4)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
@@ -63,21 +67,23 @@ def main() -> None:
 
     states = visited_states(args.scenarios)
     policies = [("heuristic", HeuristicPolicy(25))]
-    for horizon in (10, 20):
+    for horizon in args.planner_horizons:
         for mask in (MaskMode.PHYSICAL, MaskMode.HAAM):
             planner = LookaheadPlannerPolicy(25, horizon, 32, mask_mode=mask)
             policies.append((planner.name, planner))
     policies += [(path.as_posix(), SB3Policy.load(path)) for path in args.models]
     for spec in args.value:
         paths = [Path(p) for p in spec.split(",")]
-        guided = ValueGuidedPlannerPolicy(paths, 25, 10, 32, scale=0.75)
-        policies.append((f"{guided.name}[{'+'.join(p.stem for p in paths)}]", guided))
-        if args.committee:
-            network = SB3Policy.load(args.committee)
-            committee = CommitteePolicy([PlannerProposer(25, 10, 32, estimate=guided.estimate),
-                                         RolloutPolicy(network, 25, 10, estimate=guided.estimate),
-                                         RolloutPolicy(HeuristicPolicy(25), 25, 10, estimate=guided.estimate)], 25)
-            policies.append((f"committee[{'+'.join(p.stem for p in paths)}]", committee))
+        for horizon in args.value_horizons:
+            guided = ValueGuidedPlannerPolicy(paths, 25, horizon, 32, scale=0.75)
+            policies.append((f"{guided.name}[{'+'.join(p.stem for p in paths)}]", guided))
+            if args.committee:
+                network = SB3Policy.load(args.committee)
+                committee = CommitteePolicy([PlannerProposer(25, horizon, 32, estimate=guided.estimate),
+                                             RolloutPolicy(network, 25, horizon, estimate=guided.estimate),
+                                             RolloutPolicy(HeuristicPolicy(25), 25, horizon, estimate=guided.estimate)], 25)
+                suffix = "" if horizon == 10 else f"(h={horizon})"
+                policies.append((f"committee{suffix}[{'+'.join(p.stem for p in paths)}]", committee))
 
     results = {}
     for name, policy in policies:

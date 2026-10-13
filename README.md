@@ -7,7 +7,7 @@ La publicación completa, con todas las pruebas e iteraciones, está en [docs/pu
 ## Resultados principales
 
 <!-- RESULTS:START -->
-Cambios de color por escenario de 100 vehículos (menos es mejor), 500 escenarios de test; entre paréntesis, los 30 escenarios del tamaño del paper.
+Cambios de color por escenario de 100 vehículos (menos es mejor), 500 escenarios de test; entre paréntesis, los 30 escenarios del tamaño del paper. Los planificadores, el comité y la red destilada conocen los 10 vehículos siguientes de la cola; si la planta solo conoce el próximo, ver [Qué información necesita cada política](#qué-información-necesita-cada-política).
 
 | Política | Cambios | Reducción vs heurística (IC 95 %) |
 | --- | --- | --- |
@@ -21,6 +21,37 @@ Cambios de color por escenario de 100 vehículos (menos es mejor), 500 escenario
 | Comité: planificador + rollouts, juez de valor | 16,69 (16,77) | 47,4 % (46,8–48,0 %) |
 | Oráculo guiado por valor (información completa) | 14,25 (14,47) | 55,1 % (54,6–55,6 %) |
 <!-- RESULTS:END -->
+
+## Qué información necesita cada política
+
+En cada decisión, FlexSim envía a la API el estado de la planta (el vehículo que espera, el último color pintado y los 25 puestos de los buffers) y, opcionalmente, la **cola**: los colores de los vehículos que vienen detrás, en orden. El agente del paper solo usa el estado; conocer la cola («anticipación») es la mejora que el paper propone como trabajo futuro.
+
+- **Sin cola (anticipación 0).** Solo se conoce el próximo vehículo. Sirve en cualquier planta.
+- **Con cola (anticipación 10).** La planta conoce la secuencia de los 10 vehículos siguientes, y FlexSim los tiene en orden en su cola de espera. Solo vale si esa secuencia es fiable.
+
+La misma política en los dos casos (500 escenarios de test; entre paréntesis, la reducción frente a la heurística; tiempo medio por decisión en un núcleo, sin lotes):
+
+<!-- INFORMATION:START -->
+| Política | Sin cola: cambios | Sin cola: tiempo por decisión | Cola de 10: cambios | Cola de 10: tiempo por decisión |
+| --- | --- | --- | --- | --- |
+| Heurística LP/CM/UCM | 31,73 | 0,02 ms (p95 0,03) | 31,73 | 0,02 ms (p95 0,03) |
+| RL · one-hot, MLP 64×64 (5 semillas) | 29,62 (6,7 %) | 0,19 ms (p95 0,23) | 30,09 (5,2 %) | 0,19 ms (p95 0,23) |
+| Planificador con fragmentación | 29,97 (5,6 %) | 0,91 ms (p95 7,5) | 22,99 (27,6 %) | 6,28 ms (p95 14) |
+| Planificador guiado por 8 redes de valor | 24,34 (23,3 %) | 4,45 ms (p95 20) | 16,83 (46,9 %) | 42,86 ms (p95 116) |
+| Comité: planificador + rollouts, juez de valor | — | — | 16,69 (47,4 %) | 54,47 ms (p95 132) |
+<!-- INFORMATION:END -->
+
+Ventajas de cada modo:
+
+| | Sin cola | Con cola de 10 |
+| --- | --- | --- |
+| Qué necesita de la planta | Solo el próximo vehículo | La secuencia de los 10 siguientes, fiable |
+| Mejora frente a la heurística | Unos 23 % menos cambios | Unos 47 % menos cambios (algo más con el comité) |
+| Tiempo por decisión | Unos 4 ms (≈ 10 veces más rápido) | Unos 43 ms (55 ms con el comité) |
+| Riesgo | Ninguno adicional | Si la cola real no coincide con la anunciada, planifica sobre llegadas equivocadas |
+| Configuración | `HAAM_PLANNER=0` + `HAAM_VALUE`; trigger con `LOOKAHEAD = 0` | `HAAM_PLANNER=10` + `HAAM_VALUE` (+ `HAAM_COMMITTEE`); trigger con `LOOKAHEAD = 10` |
+
+Sin cola, el planificador guiado por valor sigue siendo la mejor opción: es mejor que la heurística en casi todos los escenarios y que cualquier agente de RL, incluso los que veían la cola. Las redes de valor no ven la cola en ningún caso (solo juzgan el contenido de los buffers), así que sirven en los dos modos. El comité no se evaluó sin cola, porque su red se entrenó viendo la cola.
 
 ## Qué incluye
 
@@ -77,13 +108,26 @@ En Windows con PowerShell, las variables de entorno se definen con `$env:HAAM_PL
 
 ## Política recomendada para FlexSim
 
-El planificador guiado por el promedio de varias redes de valor (`HAAM_PLANNER=10` + `HAAM_VALUE` con todas las redes de `artifacts/value/`). Usa la misma información que el agente del paper: el vehículo entrante y los 10 siguientes de la cola. Decide en decenas de milisegundos. Si la latencia fuera crítica, la red destilada de ese planificador decide en menos de un milisegundo con algo menos de calidad.
+El planificador guiado por el promedio de las 8 redes de valor de `artifacts/value/`. La anticipación depende de lo que sepa la planta (ver [Qué información necesita cada política](#qué-información-necesita-cada-política)):
+
+```powershell
+# Solo se conoce el próximo vehículo (por defecto en flexsim/decision_trigger.fs: LOOKAHEAD = 0)
+$env:HAAM_PLANNER = "0"
+$env:HAAM_VALUE   = "artifacts/value/v1.pt,artifacts/value/v2.pt,artifacts/value/v3.pt,artifacts/value/v4.pt,artifacts/value/v5.pt,artifacts/value/v6.pt,artifacts/value/v7.pt,artifacts/value/v8.pt"
+python -m uvicorn haam_rl.adapters.http_api:app --host 127.0.0.1 --port 8000
+
+# La planta conoce los 10 siguientes (poner LOOKAHEAD = 10 en el trigger)
+$env:HAAM_PLANNER   = "10"
+$env:HAAM_COMMITTEE = "artifacts/runs/bufferpair128_physical_judgesdagger/seed_0/best_model.zip"   # opcional
+```
+
+`GET /health` confirma el modo (`value_planner` o `committee`) y la anticipación (`lookahead`). Si la latencia fuera crítica con cola, la red destilada de ese planificador decide en menos de un milisegundo con algo menos de calidad.
 
 Las variables de entorno de la API:
 
 | Variable | Efecto |
 | --- | --- |
-| `HAAM_PLANNER=10` | Arranca con el planificador; el valor es la anticipación |
+| `HAAM_PLANNER=0` o `10` | Arranca con el planificador; el valor es la anticipación (cuántos vehículos de la cola mira) |
 | `HAAM_VALUE=a.pt,b.pt,...` | Con `HAAM_PLANNER`: redes de valor que guían la búsqueda (varias se promedian) |
 | `HAAM_MODELS=a.zip,b.zip` | Arranca con un modelo (o un ensemble si son varios) |
 | `HAAM_TRACE=traza.jsonl` | Registra cada decisión para verificarla con `scripts/check_trace.py` |
@@ -94,9 +138,11 @@ Sin variables, la API arranca con la heurística. Desde la web, el botón «Mode
 
 [flexsim/decision_trigger.fs](flexsim/decision_trigger.fs) es el trigger de decisión. En cada llamada:
 
-1. Envía a `POST /step` el estado de 27 valores y las próximas llegadas de la cola.
+1. Envía a `POST /step` el estado de 27 valores y, si `LOOKAHEAD` > 0, las próximas llegadas de la cola.
 2. Ejecuta lo que la API responde (`phase`, `input_buffer`, `output_buffer`): primero extrae hacia pintura, después guarda el vehículo entrante.
 3. Actualiza el KPI de cambios de color solo cuando un vehículo entra realmente a la máquina.
+
+Al inicio del trigger se configuran `TOTAL_VEHICLES` (vehículos por episodio, 100) y `LOOKAHEAD` (0 por defecto). Si los vehículos llegan con el tiempo y la cola queda vacía antes de que hayan llegado todos, el trigger espera al siguiente disparo en vez de vaciar los buffers; el modelo se detiene cuando se pintaron los `TOTAL_VEHICLES`.
 
 Para validar FlexSim contra el gemelo, levanta la API con `HAAM_TRACE=flexsim.jsonl`, corre escenarios en FlexSim y ejecuta `python scripts/check_trace.py flexsim.jsonl`. El script reproduce cada decisión con las reglas del gemelo, informa de cualquier diferencia de estado y recalcula los cambios de color de cada episodio.
 

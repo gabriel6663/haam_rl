@@ -104,6 +104,36 @@ CATALOGUE = [
 ]
 
 
+def latency_of(latency: dict, pattern: str) -> dict | None:
+    key = find(latency, pattern)
+    return None if key is None else latency[key]
+
+
+def information_rows(eval_dir: Path) -> list[tuple[str, dict | None, dict | None, dict | None, dict | None]]:
+    """The same policies with only the next vehicle known (no queue) and with the next 10 known.
+
+    Each row: (label, result without queue, result with queue, latency without, latency with).
+    Empty when the no-queue evaluation (scripts/evaluate.py ... --planner 0 --value-horizon 0) is missing.
+    """
+    no_queue_path = eval_dir / "horizon0_extended.json"
+    if not no_queue_path.exists():
+        return []
+    final, no_queue = Results(eval_dir / "final_extended.json"), Results(no_queue_path)
+    latency = load(eval_dir / "latency.json") if (eval_dir / "latency.json").exists() else {}
+    latency_h0 = load(eval_dir / "latency_horizon0.json") if (eval_dir / "latency_horizon0.json").exists() else {}
+    mlp = latency_of(latency, r"arch_64x64")  # the one-hot RL agents are 64x64 MLPs as well
+    return [
+        ("Heurística LP/CM/UCM", final.get(r"^heuristic$"), final.get(r"^heuristic$"),
+         latency_of(latency, r"^heuristic$"), latency_of(latency, r"^heuristic$")),
+        ("RL · one-hot, MLP 64×64 (5 semillas)", final.get(r"^onehot \(media"), final.get(r"^onehot_lookahead \(media"), mlp, mlp),
+        ("Planificador con fragmentación", no_queue.get(r"^planner\(h=0,w=32\)$"), final.get(r"^planner\(h=10,w=32\)$"),
+         latency_of(latency_h0, r"^planner\(h=0,w=32\)$"), latency_of(latency, r"^planner\(h=10,w=32\)$")),
+        ("Planificador guiado por 8 redes de valor", no_queue.get(r"^value_planner\(h=0"), final.get(r"^value_planner"),
+         latency_of(latency_h0, r"^value_planner\(h=0"), latency_of(latency, r"^value_planner")),
+        ("Comité: planificador + rollouts, juez de valor", None, final.get(r"^committee"), None, latency_of(latency, r"^committee")),
+    ]
+
+
 def collected_tests() -> int:
     """Number of automated tests, as pytest collects them."""
     result = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q"], capture_output=True,
@@ -329,6 +359,10 @@ def build(eval_dir: Path) -> str:
     latency = load(eval_dir / "latency.json") if (eval_dir / "latency.json").exists() else {}
     value_latency = next((v for k, v in latency.items() if k.startswith("value_planner")), None)
     latency_note = f", que decide en {num(value_latency['mean_ms'], 0)} ms de media" if value_latency else ""
+    info = information_rows(eval_dir)
+    info_by_label = {row[0]: row for row in info}
+    nq_value = info_by_label.get("Planificador guiado por 8 redes de valor")
+    nq_best, nq_best_latency = (nq_value[1], nq_value[3]) if nq_value else (None, None)
     value_meta = {p.stem: load(p) for p in sorted(Path("artifacts/value").glob("v*.json"))}
 
     # ------------------------------------------------------------------ text
@@ -373,10 +407,10 @@ Tras corregir un gemelo digital que no simulaba la misma planta que FlexSim, la 
 100 vehículos ({n_ext} escenarios de test). El agente RL al estilo del paper la reduce un {pct(rl_paper['vs_heuristic']['reduction_pct'])} y la mejor
 configuración RL, un {pct(rl_best['vs_heuristic']['reduction_pct'])}. Mostramos que añadir capas a la red no ayuda, que una red que respeta la simetría
 entre buffers sí, y que el límite real está en cómo se estima el coste futuro. La mejor política es un planificador por búsqueda en haz que,
-con la misma información que el agente (el vehículo entrante y las 10 llegadas siguientes), evalúa el futuro con el promedio de 8 redes de
+conociendo el vehículo entrante y las 10 llegadas siguientes, evalúa el futuro con el promedio de 8 redes de
 valor: {num(b)} cambios, una reducción del {pct(red)} (IC 95 % {num(best['vs_heuristic']['reduction_ci95'][0], 1)}–{num(best['vs_heuristic']['reduction_ci95'][1], 1)} %),
 mejor que la heurística en {best['vs_heuristic']['wins']} de {n_ext} escenarios{f" y a {num(b - value_oracle['mean'])} cambios de un oráculo que conoce las 100 llegadas" if value_oracle else ""}.
-Cada cifra de este documento se genera a partir de los resultados guardados, con semillas fijas y pruebas pareadas.</p>
+{f"Esa cifra supone que la planta conoce la secuencia de los 10 vehículos siguientes. Si solo se conoce el próximo vehículo, como en el agente del paper, el mismo planificador sin anticipación obtiene {num(nq_best['mean'])} cambios ({pct(nq_best['vs_heuristic']['reduction_pct'])} menos que la heurística, mejor en {nq_best['vs_heuristic']['wins']} de {n_ext} escenarios) y decide unas {num(value_latency['mean_ms'] / nq_best_latency['mean_ms'], 0)} veces más rápido (sección 5.10). " if nq_best and nq_best_latency and value_latency else ""}Cada cifra de este documento se genera a partir de los resultados guardados, con semillas fijas y pruebas pareadas.</p>
 </section>""")
 
     sections.append(f"""
@@ -425,7 +459,7 @@ puntúa cada par (entrada, salida) con una función compartida y es exactamente 
 <p><b>Imitación (DAgger).</b> La red aprende a reproducir las decisiones de un planificador; en cada iteración juega ella misma y el planificador
 etiqueta los estados a los que llega (Ross et al., 2011). Opcionalmente, PPO refina el resultado.</p>
 <p><b>Planificador por búsqueda en haz.</b> En cada decisión simula todas las acciones físicamente posibles sobre los vehículos conocidos (el entrante y
-los 10 siguientes), conserva los 32 mejores planes por profundidad y ejecuta la primera acción del mejor. Un plan se puntúa con sus cambios de color
+los 10 siguientes, o solo el entrante si la planta no conoce la cola; sección 5.10), conserva los 32 mejores planes por profundidad y ejecuta la primera acción del mejor. Un plan se puntúa con sus cambios de color
 más una estimación del coste futuro del estado que deja: 0,2 × fragmentación de los buffers (fórmula manual) o una red de valor.</p>
 <p><b>Búsqueda guiada por valor.</b> Una red de valor, invariante al orden de los buffers, estima cuántos cambios habrá en los 30 vehículos siguientes
 viendo solo el contenido de los buffers y el último color (lo que se sabe al final del horizonte conocido). Se entrena con partidas del planificador en
@@ -568,6 +602,46 @@ gemelo no modela, y es independiente de la política.</p>
 {figure_block(fig_fill, "Figura 6. Cambios de color según las plazas que se dejan libres en los buffers.")}
 """)
 
+    if info and nq_best:
+        def info_cells(row: dict | None, timing: dict | None) -> list[str]:
+            if row is None:
+                return ["—", "—", "—", "—"]
+            stats = row["vs_heuristic"]
+            heuristic_row = row["key"] == "heuristic"
+            return [num(row["mean"]), "—" if heuristic_row else pct(stats["reduction_pct"]),
+                    "—" if heuristic_row else f"{stats['wins']}/{stats['ties']}/{stats['losses']}",
+                    f"{num(timing['mean_ms'], 2)} ({num(timing['p95_ms'], 1 if timing['p95_ms'] >= 1 else 2)})" if timing else "—"]
+
+        info_table = [[label] + info_cells(nq, nq_t) + info_cells(q, q_t) for label, nq, q, nq_t, q_t in info]
+        nq_planner = info_by_label["Planificador con fragmentación"]
+        rl_row = info_by_label["RL · one-hot, MLP 64×64 (5 semillas)"]
+        q_latency = info_by_label["Planificador guiado por 8 redes de valor"][4]
+        info_versus = versus(best, nq_best, "Planificador guiado con cola de 10 frente al mismo sin cola")
+        sections.append(f"""
+<h3>5.10 ¿Qué pasa si solo se conoce el próximo vehículo?</h3>
+<p>El agente del paper solo ve el vehículo que espera, el último color pintado y los buffers. Los planificadores de este trabajo pueden ver además
+la cola: los k vehículos siguientes, en orden («anticipación», propuesta por el paper como trabajo futuro). Todas las cifras anteriores de búsqueda usan
+k = 10, lo que exige que la planta conozca la secuencia con antelación y que FlexSim la tenga en su cola de espera. Si en la planta solo se conoce el próximo
+vehículo, hay que usar k = 0. Las redes de valor no ven la cola en ningún caso: solo juzgan el contenido de los buffers, así que sirven en ambos modos.</p>
+{table(["Política", "Sin cola: cambios", "Reducción", "G/E/P", "ms media (p95)", "Cola de 10: cambios", "Reducción", "G/E/P", "ms media (p95)"],
+       info_table, f"Tabla 5. La misma política con solo el próximo vehículo conocido y con los 10 siguientes, {n_ext} escenarios de test. "
+       "Latencia por decisión en un núcleo, sin lotes; la de RL es la de un MLP 64×64. El comité no se evaluó sin cola (su red se entrenó viendo la cola).",
+       "lrrrrrrrr")}
+<p>Sin cola, el planificador guiado por valor sigue siendo la mejor política: {num(nq_best['mean'])} cambios ({pct(nq_best['vs_heuristic']['reduction_pct'])}),
+mejor que la heurística en {nq_best['vs_heuristic']['wins']} de {n_ext} escenarios y mejor que cualquier agente RL, incluso los que veían la cola. La fórmula de
+fragmentación, sin cola, apenas mejora la heurística ({num(nq_planner[1]['mean'])}): sin llegadas que simular, la calidad del juez lo es todo. El RL tampoco aprovecha la
+cola ({num(rl_row[1]['mean'])} sin ella, {num(rl_row[2]['mean'])} con ella).{f" {info_versus}" if info_versus else ""}</p>
+<p><b>Ventajas de cada modo.</b></p>
+<ul>
+<li><b>Sin cola (k = 0).</b> No necesita conocer la secuencia: sirve en cualquier planta y coincide con la información del paper. Decide en
+{num(nq_best_latency['mean_ms'], 1)} ms de media, unas {num(q_latency['mean_ms'] / nq_best_latency['mean_ms'], 0)} veces más rápido que con cola (p95 {num(nq_best_latency['p95_ms'], 0)} ms;
+máximo {num(nq_best_latency['max_ms'], 0)} ms, en el vaciado final, cuando ya no llegan vehículos y la búsqueda llega hasta el último). Es la opción por defecto del trigger de FlexSim.</li>
+<li><b>Con cola (k = 10).</b> Casi duplica la mejora ({pct(best['vs_heuristic']['reduction_pct'])} frente a {pct(nq_best['vs_heuristic']['reduction_pct'])}), porque puede reservar
+plazas para los colores que sabe que vienen. Cuesta {num(q_latency['mean_ms'], 0)} ms de media (p95 {num(q_latency['p95_ms'], 0)} ms), todavía muy por debajo de los 5 s de espera de FlexSim,
+y solo es válido si la secuencia es fiable: si la cola real no coincide con la anunciada, el plan se hace sobre llegadas equivocadas. Admite el comité para una mejora adicional pequeña.</li>
+</ul>
+""")
+
     final_rows = [comparison_row(label, row, paper_row) for label, _, row, paper_row in available]
     sections.append(f"""
 <section><h2>6. Resultados finales</h2>
@@ -579,11 +653,15 @@ gemelo no modela, y es independiente de la política.</p>
 </section>""")
 
     if latency:
-        lat_rows = [[html.escape(name), num(v["mean_ms"], 2), num(v["p95_ms"], 2), num(v["max_ms"], 2)] for name, v in latency.items()]
+        latency_h0_path = eval_dir / "latency_horizon0.json"
+        no_queue_latency = {k: v for k, v in load(latency_h0_path).items() if "h=0" in k} if latency_h0_path.exists() else {}
+        lat_rows = [[html.escape(name), num(v["mean_ms"], 2), num(v["p95_ms"], 2), num(v["max_ms"], 2)]
+                    for name, v in {**latency, **no_queue_latency}.items()]
         sections.append(f"""
 <section><h2>7. Coste por decisión</h2>
-{table(["Política", "Media (ms)", "p95 (ms)", "Máximo (ms)"], lat_rows, "Tabla 5. Latencia por decisión en un núcleo de CPU, sin procesamiento por lotes.")}
-<p>Todas las políticas caben en el tiempo de decisión de FlexSim; la red destilada es dos órdenes de magnitud más rápida que el planificador guiado.</p>
+{table(["Política", "Media (ms)", "p95 (ms)", "Máximo (ms)"], lat_rows, "Tabla 6. Latencia por decisión en un núcleo de CPU, sin procesamiento por lotes; h es la anticipación (h=0: solo el próximo vehículo).")}
+<p>Todas las políticas caben en el tiempo de decisión de FlexSim (5 s); la red destilada es dos órdenes de magnitud más rápida que el planificador guiado, y el
+planificador guiado sin cola, uno.</p>
 </section>""")
 
     sections.append(f"""
@@ -594,8 +672,9 @@ recibe poca señal útil. Más capas no lo resuelven: los MLP grandes memorizan 
 <p><b>Por qué gana la búsqueda guiada por valor.</b> Separa lo que se sabe (las llegadas conocidas, que se simulan exactamente) de lo que no (el futuro, que estima una red).
 La calidad del juez es decisiva: con una buena estimación, incluso combinar modelos por simulación funciona; con una mala, empeora. Promediar jueces es la forma más
 barata y robusta de mejorarlo.</p>
-<p><b>Recomendación.</b> Desplegar el planificador guiado por el ensemble de redes de valor ({num(b)} cambios, {pct(red)} menos que la heurística){latency_note}.
-El comité con rollouts añade una mejora pequeña pero significativa si se dispone de algo más de tiempo por decisión. Si la latencia fuera crítica, la versión destilada
+<p><b>Recomendación.</b> Desplegar el planificador guiado por el ensemble de redes de valor. Si la planta conoce la secuencia de los 10 vehículos siguientes, con
+anticipación 10 ({num(b)} cambios, {pct(red)} menos que la heurística){latency_note}; el comité con rollouts añade una mejora pequeña pero significativa si se dispone de algo
+más de tiempo por decisión.{f" Si solo se conoce el próximo vehículo, desplegarlo sin anticipación ({num(nq_best['mean'])} cambios, {pct(nq_best['vs_heuristic']['reduction_pct'])} menos, {num(nq_best_latency['mean_ms'], 1)} ms de media)." if nq_best and nq_best_latency else ""} Si la latencia fuera crítica, la versión destilada
 del planificador{f" ({num(student['mean'])} cambios)" if student else ""} decide en menos de un milisegundo. Revisar además el nivel de llenado de los buffers con producción.</p>
 </section>
 <section><h2>9. Limitaciones y trabajo futuro</h2>
@@ -613,6 +692,8 @@ python scripts/distill.py --config configs/onehot_lookahead_physical.json --teac
 python scripts/train_value.py --out artifacts/value/v1.pt
 python scripts/research/value_judges.py --values artifacts/value/v*.pt
 python scripts/research/final_evaluation.py --value &lt;redes&gt; --committee-network &lt;red&gt;
+python scripts/evaluate.py --seed-set extended --planner 0 --value &lt;redes&gt; --value-horizon 0 --out artifacts/eval/horizon0_extended.json
+python scripts/benchmark.py --planner-horizons 0 --value &lt;redes&gt; --value-horizons 0 10 --out artifacts/eval/latency_horizon0.json
 python scripts/build_publication.py</pre>
 </section>
 <section class="refs"><h2>Referencias</h2>
@@ -671,7 +752,9 @@ def readme_results(eval_dir: Path) -> str:
     final, paper = Results(eval_dir / "final_extended.json"), Results(eval_dir / "final_paper.json")
     labels = {pattern: label for label, _, pattern in CATALOGUE}
     intro = (f"Cambios de color por escenario de 100 vehículos (menos es mejor), {len(final.data['seeds'])} escenarios "
-             f"de test; entre paréntesis, los {len(paper.data['seeds'])} escenarios del tamaño del paper.")
+             f"de test; entre paréntesis, los {len(paper.data['seeds'])} escenarios del tamaño del paper. Los planificadores, "
+             "el comité y la red destilada conocen los 10 vehículos siguientes de la cola; si la planta solo conoce el próximo, "
+             "ver [Qué información necesita cada política](#qué-información-necesita-cada-política).")
     lines = [intro, "",
              "| Política | Cambios | Reducción vs heurística (IC 95 %) |", "| --- | --- | --- |"]
     for pattern in README_ROWS:
@@ -685,12 +768,40 @@ def readme_results(eval_dir: Path) -> str:
     return "\n".join(lines)
 
 
-def update_readme(eval_dir: Path, path: Path = Path("README.md")) -> None:
-    text = path.read_text(encoding="utf-8")
-    start, end = "<!-- RESULTS:START -->", "<!-- RESULTS:END -->"
+def readme_information(eval_dir: Path) -> str:
+    """README table: each policy with only the next vehicle known and with the next 10 known."""
+    rows = information_rows(eval_dir)
+    if not rows:
+        return "(Falta artifacts/eval/horizon0_extended.json.)"
+
+    def cells(row: dict | None, timing: dict | None) -> str:
+        if row is None:
+            return "— | —"
+        reduction = "" if row["key"] == "heuristic" else f" ({pct(row['vs_heuristic']['reduction_pct'])})"
+        p95 = timing["p95_ms"] if timing else 0.0
+        speed = f"{num(timing['mean_ms'], 2)} ms (p95 {num(p95, 0 if p95 >= 10 else 1 if p95 >= 1 else 2)})" if timing else "—"
+        return f"{num(row['mean'])}{reduction} | {speed}"
+
+    lines = ["| Política | Sin cola: cambios | Sin cola: tiempo por decisión | Cola de 10: cambios | Cola de 10: tiempo por decisión |",
+             "| --- | --- | --- | --- | --- |"]
+    lines += [f"| {label} | {cells(nq, nq_t)} | {cells(q, q_t)} |" for label, nq, q, nq_t, q_t in rows]
+    return "\n".join(lines)
+
+
+def _replace_block(text: str, name: str, content: str) -> str:
+    start, end = f"<!-- {name}:START -->", f"<!-- {name}:END -->"
+    if start not in text:
+        return text
     head, rest = text.split(start, 1)
     _, tail = rest.split(end, 1)
-    path.write_text(f"{head}{start}\n{readme_results(eval_dir)}\n{end}{tail}", encoding="utf-8")
+    return f"{head}{start}\n{content}\n{end}{tail}"
+
+
+def update_readme(eval_dir: Path, path: Path = Path("README.md")) -> None:
+    text = path.read_text(encoding="utf-8")
+    text = _replace_block(text, "RESULTS", readme_results(eval_dir))
+    text = _replace_block(text, "INFORMATION", readme_information(eval_dir))
+    path.write_text(text, encoding="utf-8")
 
 
 def main() -> None:
