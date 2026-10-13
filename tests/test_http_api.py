@@ -184,3 +184,19 @@ def test_committee_with_value_referee_can_be_selected(tiny_model: Path, tmp_path
     planner = {"horizon": 3, "width": 4, "value": "v.pt", "committee_network": "net.zip"}
     assert client.post("/models/load", json={"planner": planner}).json()["mode"] == "committee"
     assert client.post("/step", json={"state_vector": STATE, "upcoming": [2, 3, 3]}).json()["decided_by"] == "committee"
+
+
+def test_value_planner_exposes_its_judges():
+    values = "value/v1.pt,value/v2.pt"
+    if not all((http_api.ARTIFACTS_DIR / v).exists() for v in values.split(",")):
+        pytest.skip("value networks not trained in this checkout")
+    health = client.post("/models/load", json={"planner": {"horizon": 0, "value": values}}).json()
+    assert health["mode"] == "value_planner" and health["networks"] == ["value/v1.pt", "value/v2.pt"]
+    architecture = client.get("/model/architecture?member=1").json()
+    assert architecture["kind"] == "value" and architecture["name"] == "value/v2.pt"
+    body = client.post("/inspect", json={"state_vector": STATE, "member": 1}).json()
+    judges = body["judges"]
+    assert body["network"]["value"] == pytest.approx(judges["values"][1], abs=1e-3)
+    scores = [s for s in judges["action_scores"] if s is not None]
+    # With look-ahead 0 in FILL the planner ranks exactly by the one-step judge score.
+    assert judges["action_scores"][body["action_id"]] == min(scores)

@@ -33,7 +33,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from haam_rl.adapters.model_inspector import PolicyInspector
+from haam_rl.adapters.model_inspector import PolicyInspector, ValueInspector
 from haam_rl.adapters.python_twin import PythonPaintShopTwin
 from haam_rl.adapters.runner import evaluation_twin
 from haam_rl.adapters.sb3_policy import SB3Policy
@@ -43,7 +43,7 @@ from haam_rl.application.hybrid import CommitteePolicy, PlannerProposer, Rollout
 from haam_rl.application.ports import Policy
 from haam_rl.application.use_cases import EnsemblePolicy, HeuristicPolicy, LookaheadPlannerPolicy
 from haam_rl.config import ExperimentConfig, config_path_for
-from haam_rl.domain.dynamics import phase_of, physical_action_mask
+from haam_rl.domain.dynamics import apply_action, phase_of, physical_action_mask
 from haam_rl.domain.heuristics import MaskMode, action_mask, heuristic_action
 from haam_rl.domain.model import ACTION_COUNT, STATE_VECTOR_SIZE, Phase, PlantState, decode_action
 
@@ -51,10 +51,20 @@ app = FastAPI(title="HAAM-RL Twin Bridge", version="0.3.0")
 # Local research tool: the UI may be opened from file:// or another port.
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-ARTIFACTS_DIR = Path(os.getenv("HAAM_ARTIFACTS_DIR", "artifacts")).resolve()
+PROJECT_DIR = Path(__file__).resolve().parents[3]
+# Default: the project's artifacts/, wherever the server is started from.
+ARTIFACTS_DIR = Path(os.getenv("HAAM_ARTIFACTS_DIR", PROJECT_DIR / "artifacts")).resolve()
 TRACE_PATH = Path(os.environ["HAAM_TRACE"]) if os.getenv("HAAM_TRACE") else None
 _trace_lock = threading.Lock()
-WEB_DIR = Path(os.getenv("HAAM_WEB_DIR", Path(__file__).resolve().parents[3] / "web"))
+WEB_DIR = Path(os.getenv("HAAM_WEB_DIR", PROJECT_DIR / "web"))
+
+
+def _startup_path(value: str) -> str:
+    """A path from an environment variable: as given if it exists, else relative to the project."""
+    path = Path(value.strip())
+    if not path.is_absolute() and not path.exists():
+        path = PROJECT_DIR / path
+    return str(path.resolve())
 
 
 # ---------------------------------------------------------------- loaded policy
@@ -66,7 +76,8 @@ class Registry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.members: list[SB3Policy] = []
-        self.inspectors: list[PolicyInspector] = []
+        self.inspectors: list[PolicyInspector | ValueInspector] = []
+        self.referee = None  # the value estimate of a value-guided planner or committee
         self.paths: list[Path] = []
         self.config = ExperimentConfig()
         self.policy: Policy = HeuristicPolicy(self.config.plant.fill_target)
@@ -75,12 +86,17 @@ class Registry:
              planner: PlannerSpec | None = None) -> None:
         members = [SB3Policy.load(p) for p in paths]
         policy: Policy
+        inspectors: list[PolicyInspector | ValueInspector] = [PolicyInspector(m) for m in members]
+        referee = None
         if planner is not None:
             config = ExperimentConfig().with_overrides(plant={"fill_target": planner.fill_target})
             if planner.value:
                 values = [_artifact(v.strip(), ".pt") for v in planner.value.split(",") if v.strip()]
                 policy = ValueGuidedPlannerPolicy(values, planner.fill_target, planner.horizon, planner.width,
                                                   planner.value_scale)
+                referee = policy.estimate
+                inspectors = [ValueInspector(_relative(path), network)
+                              for path, network in zip(values, policy.estimate.networks)]
                 if planner.committee_network:
                     referee = policy.estimate
                     network = SB3Policy.load(_artifact(planner.committee_network, ".zip"))
@@ -100,7 +116,7 @@ class Registry:
             policy = members[0] if len(members) == 1 else EnsemblePolicy(members, hard_threshold=hard_threshold)
         with self._lock:
             self.members, self.paths, self.config, self.policy = members, [Path(p).resolve() for p in paths], config, policy
-            self.inspectors = [PolicyInspector(m) for m in members]
+            self.inspectors, self.referee = inspectors, referee
 
     @property
     def mode(self) -> str:
@@ -138,6 +154,11 @@ class PlannerSpec(BaseModel):
     committee_network: str | None = Field(default=None, description="network zip for a committee with the value planner")
 
 
+def _relative(path: Path) -> str:
+    path = Path(path).resolve()
+    return path.relative_to(ARTIFACTS_DIR).as_posix() if path.is_relative_to(ARTIFACTS_DIR) else path.name
+
+
 def _artifact(relative: str, suffix: str) -> Path:
     """A file inside artifacts/; anything outside it, or of another type, is refused."""
     path = Path(relative) if Path(relative).is_absolute() else (ARTIFACTS_DIR / relative)
@@ -149,11 +170,11 @@ def _artifact(relative: str, suffix: str) -> Path:
 
 registry = Registry()
 if os.getenv("HAAM_PLANNER"):
-    value = ",".join(str(Path(v).resolve()) for v in os.environ["HAAM_VALUE"].split(",")) if os.getenv("HAAM_VALUE") else None
-    committee = str(Path(os.environ["HAAM_COMMITTEE"]).resolve()) if os.getenv("HAAM_COMMITTEE") else None
+    value = ",".join(_startup_path(v) for v in os.environ["HAAM_VALUE"].split(",") if v.strip()) if os.getenv("HAAM_VALUE") else None
+    committee = _startup_path(os.environ["HAAM_COMMITTEE"]) if os.getenv("HAAM_COMMITTEE") else None
     registry.load([], planner=PlannerSpec(horizon=int(os.environ["HAAM_PLANNER"]), value=value, committee_network=committee))
 elif os.getenv("HAAM_MODELS"):
-    registry.load([Path(p.strip()) for p in os.environ["HAAM_MODELS"].split(",") if p.strip()])
+    registry.load([Path(_startup_path(p)) for p in os.environ["HAAM_MODELS"].split(",") if p.strip()])
 
 
 # ---------------------------------------------------------------- request / response bodies
@@ -258,6 +279,9 @@ def health() -> dict:
         "lookahead": registry.lookahead,
         "mask_mode": registry.mask_mode.value,
         "vehicles": registry.config.plant.vehicles,
+        # Networks the inspector can draw: the loaded models, or the judges of a value-guided planner.
+        "networks": [i.name if isinstance(i, ValueInspector) else _relative(p) for i, p in
+                     zip(registry.inspectors, registry.paths or [None] * len(registry.inspectors))],
     }
 
 
@@ -324,7 +348,7 @@ def load_models(request: LoadRequest) -> dict:
 @app.get("/model/architecture")
 def architecture(member: int = Query(default=0, ge=0)) -> dict:
     if member >= len(registry.inspectors):
-        raise HTTPException(status_code=404, detail="No trained model loaded (the API is using the heuristic)")
+        raise HTTPException(status_code=404, detail="No network to inspect: load a model or a value-guided planner")
     return registry.inspectors[member].architecture()
 
 
@@ -334,7 +358,27 @@ def inspect(request: InspectRequest) -> dict:
     state = _parse_state(request)
     payload = _decision_payload(state)
     payload["network"] = registry.inspectors[request.member].inspect(state) if request.member < len(registry.inspectors) else None
+    if registry.referee is not None:
+        payload["judges"] = _judges(state)
     return payload
+
+
+def _judges(state: PlantState) -> dict:
+    """What the value judges say: each network's V(s), and the one-step score of every executable action.
+
+    The score is what the planner minimises when it looks one step ahead: the color change of the
+    action plus the scaled average V of the state it leaves (with look-ahead 0 in FILL and STEADY,
+    exactly the planner's ranking; with more look-ahead, only its first step).
+    """
+    fill = _fill_target()
+    scores: list[float | None] = [None] * ACTION_COUNT
+    for action in np.flatnonzero(physical_action_mask(state, fill)):
+        transition = apply_action(state, int(action), fill)
+        scores[int(action)] = round(float(transition.color_changed) + registry.referee([transition.state])[0], 4)
+    values = [round(i.value(state), 4) for i in registry.inspectors if isinstance(i, ValueInspector)]
+    return {"names": [i.name for i in registry.inspectors if isinstance(i, ValueInspector)], "values": values,
+            "mean": round(float(np.mean(values)), 4) if values else None, "scale": registry.referee.scale,
+            "action_scores": scores}
 
 
 # ---------------------------------------------------------------- interactive twin

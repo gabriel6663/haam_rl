@@ -148,3 +148,116 @@ class PolicyInspector:
             "group_attribution": [float(attribution[g.start:g.stop].sum()) for g in groups],
             "group_saliency": [float(np.abs(gradient[g.start:g.stop]).max()) for g in groups],
         }
+
+
+class ValueInspector:
+    """Introspection of one value network (a judge of the value-guided planner).
+
+    The network reads each buffer with the same encoder (43 inputs: 5 slots one-hot, the last painted
+    color one-hot and the occupancy), pools the 5 buffer embeddings (mean and max) and maps them to
+    V(s), the expected color changes among the next vehicles. The web draws the encoder for any
+    buffer and the head; activations and saliency come from a replayed forward pass.
+    """
+
+    kind = "value"
+
+    def __init__(self, name: str, network: nn.Module) -> None:
+        from haam_rl.adapters.value_search import _CODE
+
+        self.name, self.network, self.code = name, network.eval(), _CODE
+        self.encoder = _branch_layers(network.buffer[:-2], network.buffer[-2], "relu")
+        self.head = _branch_layers(network.head[:-1], network.head[-1], "identity")
+
+    def _input_groups(self) -> list[dict]:
+        code, groups = self.code, []
+        for slot in range(5):
+            groups.append({"label": f"slot {slot + 1}", "kind": "color", "start": slot * code, "stop": (slot + 1) * code})
+        groups.append({"label": "último", "kind": "color", "start": 5 * code, "stop": 6 * code})
+        groups.append({"label": "ocupación", "kind": "scalar", "start": 6 * code, "stop": 6 * code + 1})
+        return groups
+
+    def _input_labels(self) -> list[str]:
+        colors = ["∅"] + [f"c{c}" for c in range(1, self.code)]
+        labels = [f"slot{s + 1}:{c}" for s in range(5) for c in colors]
+        return labels + [f"último:{c}" for c in colors] + ["ocupación"]
+
+    def architecture(self) -> dict:
+        def describe(layers: list[tuple[nn.Linear, str]]) -> list[dict]:
+            return [{"in_features": layer.in_features, "out_features": layer.out_features, "activation": activation,
+                     "weight": layer.weight.detach().numpy().round(5).tolist(),
+                     "bias": layer.bias.detach().numpy().round(5).tolist(),
+                     "weight_stats": _stats(layer.weight.detach().numpy())} for layer, activation in layers]
+
+        hidden = self.head[0][0].in_features // 2
+        pooled = [{"label": "media", "kind": "pool", "start": 0, "stop": hidden},
+                  {"label": "máximo", "kind": "pool", "start": hidden, "stop": 2 * hidden}]
+        names = ["Codificador de buffer", "Codificador de buffer", "Cabeza", "Cabeza"]
+        sources = [self._input_labels(), None, [f"media n{i}" for i in range(hidden)] + [f"máx n{i}" for i in range(hidden)], None]
+        layers = [layer for layer, _ in self.encoder] + [layer for layer, _ in self.head]
+        matrices = [{"name": f"{names[k]} · capa {k % 2 + 1}", "shape": list(layer.weight.shape),
+                     "weight": layer.weight.detach().numpy().round(5).tolist(),
+                     "weight_stats": _stats(layer.weight.detach().numpy()), "src_labels": sources[k]}
+                    for k, layer in enumerate(layers)]
+        return {
+            "name": self.name, "kind": self.kind, "config": None,
+            "parameter_count": int(sum(p.numel() for p in self.network.parameters())),
+            "branches": {"buffer": describe(self.encoder), "head": describe(self.head)},
+            "branch_groups": {"buffer": self._input_groups(), "head": pooled},
+            "attr_groups": [{"label": "entrante (no lo ve)", "kind": "color"}, {"label": "último", "kind": "color"}] +
+                           [{"label": f"B{b + 1} slot {s + 1}", "kind": "color"} for b in range(5) for s in range(5)],
+            "action_labels": action_labels(),
+            "matrices": matrices,
+        }
+
+    def value(self, state: PlantState) -> float:
+        from haam_rl.adapters.value_search import encode_leaves
+
+        with torch.no_grad():
+            return float(self.network(torch.as_tensor(encode_leaves([state]))).item())
+
+    def inspect(self, state: PlantState) -> dict:
+        from haam_rl.adapters.value_search import encode_leaves
+
+        x = torch.as_tensor(encode_leaves([state])).requires_grad_(True)  # (1, 5 buffers, 43)
+        trace, h = [], x
+        for layer, activation in self.encoder:
+            pre = layer(h)
+            post = _FUNCTIONS[activation](pre) if activation in _FUNCTIONS else pre
+            trace.append({"pre": pre, "post": post})
+            h = post
+        pooled = torch.cat([h.mean(dim=1), h.max(dim=1).values], dim=1)
+        head_trace, out = [], pooled
+        for layer, activation in self.head:
+            pre = layer(out)
+            post = _FUNCTIONS[activation](pre) if activation in _FUNCTIONS else pre
+            head_trace.append({"pre": pre, "post": post})
+            out = post
+        out.sum().backward()
+        gradient = x.grad.detach().numpy()[0]           # (5, 43)
+        attribution = gradient * x.detach().numpy()[0]
+        code = self.code
+        last = slice(5 * code, 6 * code)
+        group_attribution = [0.0, float(attribution[:, last].sum())]
+        group_saliency = [0.0, float(np.abs(gradient[:, last]).max())]
+        for b in range(5):
+            for s in range(5):
+                part = slice(s * code, (s + 1) * code)
+                group_attribution.append(float(attribution[b, part].sum()))
+                group_saliency.append(float(np.abs(gradient[b, part]).max()))
+
+        def rows(t: torch.Tensor) -> list:
+            return t.detach().numpy()[0].round(5).tolist()
+
+        return {
+            "kind": self.kind,
+            "value": float(out.item()),
+            "positions": state.as_vector().tolist(),
+            "buffer_inputs": rows(x),
+            "buffer_layers": [[{k: v.detach().numpy()[0, b].round(5).tolist() for k, v in t.items()} for t in trace]
+                              for b in range(5)],
+            "pooled": rows(pooled),
+            "head_layers": [{k: v.detach().numpy().ravel().round(5).tolist() for k, v in t.items()} for t in head_trace],
+            "group_attribution": group_attribution,
+            "group_saliency": group_saliency,
+            "occupancy_attribution": float(attribution[:, 6 * code].sum()),
+        }

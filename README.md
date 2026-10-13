@@ -229,7 +229,8 @@ tests/           dominio, aplicación, políticas híbridas y API
 Se abre en `http://127.0.0.1:8000/ui/` con la API levantada. Permite:
 
 - **Elegir la política.** Heurística, uno o varios modelos (ensemble), el planificador o el planificador guiado por una o varias redes de valor.
-- **Ver la red.** Para MLP: actor y crítico capa a capa, con aristas por peso o por peso × activación. Para la red estructurada: todas sus matrices de pesos.
+- **Ver la red.** Para MLP: actor y crítico capa a capa, con aristas por peso o por peso × activación. Para la red estructurada: todas sus matrices de pesos. Con el planificador guiado por valor (o el comité), cada una de las redes de valor («jueces»), elegidas en el selector «Red»: el codificador aplicado a cada buffer (B1–B5) y la cabeza que estima V(s), con sus pesos, activaciones y sensibilidad.
+- **Ver por qué decide el planificador guiado.** En «Decisión», el botón «juez» muestra para cada acción el puntaje que minimiza el planificador a un paso (cambio de color + λ·V del estado siguiente, promediando los jueces), y la lista de V(s) de cada juez. Sin cola (anticipación 0) es exactamente su criterio en llenado y régimen.
 - **Editar un estado** a mano (o pegar el vector de FlexSim) y ver la decisión, las probabilidades, la acción de la heurística y los votos del ensemble.
 - **Medir la sensibilidad** de cada posición del estado.
 - **Jugar episodios** del gemelo paso a paso, con la política, con la heurística o a mano.
