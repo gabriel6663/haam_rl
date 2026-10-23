@@ -2,7 +2,7 @@
 
 Reproducción, análisis y superación de **HAAM-RL** (Choi et al., 2024, [arXiv:2403.14110](https://arxiv.org/abs/2403.14110)) para el re-secuenciamiento por color en una planta de pintura automotriz: decidir en qué buffer FIFO se guarda cada vehículo y de cuál se pinta, para minimizar los cambios de color.
 
-La publicación completa, con todas las pruebas e iteraciones, está en [docs/publicacion/publicacion.pdf](docs/publicacion/publicacion.pdf) (fuente: `docs/publicacion/publicacion.html`). La genera `scripts/build_publication.py` directamente desde los resultados guardados, así que ninguna cifra está escrita a mano.
+La publicación completa, con todas las pruebas e iteraciones, está en [docs/publicacion/publicacion.pdf](docs/publicacion/publicacion.pdf).
 
 ## Resultados principales
 
@@ -71,40 +71,138 @@ Sin cola, el planificador guiado por valor sigue siendo la mejor opción: es mej
 
 ## Instalación
 
-Requiere Python 3.11–3.13. En cualquier sistema operativo:
+**Requisitos.** Python 3.11, 3.12 o 3.13 (`python --version`). No hace falta GPU: las redes son pequeñas (unos 55.000 parámetros cada red de valor) y el cuello de botella es la simulación, así que todo corre en CPU. Las dependencias principales son PyTorch, Stable-Baselines3 + sb3-contrib (PPO con máscara de acciones), Gymnasium, NumPy y FastAPI; las instala `pip`.
+
+**1. Crear un entorno virtual** en la carpeta del proyecto, para no mezclar estas librerías con las del sistema:
+
+```powershell
+# Windows (PowerShell)
+cd C:\ruta\a\haam_rl_twin
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
 
 ```bash
+# Linux / macOS
+cd /ruta/a/haam_rl_twin
 python -m venv .venv
-# Windows: .venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
+source .venv/bin/activate
+```
+
+Si PowerShell no deja ejecutar `Activate.ps1`, permítelo una vez para tu usuario con `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. El entorno se activa en cada terminal nueva antes de trabajar; el prompt muestra `(.venv)`.
+
+**2. Instalar el proyecto** (en modo editable, con las herramientas de pruebas):
+
+```bash
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
+```
+
+Con una GPU NVIDIA, `pip` puede descargar la versión de PyTorch con CUDA, que es mucho más pesada y no aporta nada aquí. Para instalar solo la de CPU, antes del paso anterior: `pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+
+**3. Comprobar la instalación:**
+
+```bash
 pytest
 ```
 
-No hace falta GPU: las redes son pequeñas y el cuello de botella es la simulación, así que todo corre en CPU (un núcleo por entrenamiento). Para generar la publicación: `pip install -e ".[docs]"` y `playwright install chromium`.
+Todas las pruebas deben pasar (tardan unos 15 segundos).
 
-## Uso rápido
+**4. Archivos entrenados.** La carpeta `artifacts/` (redes de valor, modelos y resultados) no está en git. Si te la pasaron aparte, cópiala en la raíz del proyecto: con `artifacts/value/v1.pt` … `v8.pt` ya se puede usar la mejor política sin entrenar nada. Si no la tienes, la sección siguiente explica cómo entrenarlo todo.
+
+**5. Probar que funciona:** levanta la API (ver [Política recomendada para FlexSim](#política-recomendada-para-flexsim)) y abre el inspector en `http://127.0.0.1:8000/ui/`.
+
+## Entrenamiento
+
+Todos los comandos se ejecutan desde la raíz del proyecto, con el entorno activado. Cada script admite `--help`. Lo que se entrena queda en `artifacts/`; volver a entrenar con el mismo `--out` **sobrescribe** el archivo, así que para experimentar conviene usar otro nombre o carpeta (por ejemplo `artifacts/value_nuevas/`; la API solo carga archivos que estén dentro de `artifacts/`).
+
+### Las 8 redes de valor (los jueces del planificador)
+
+**Qué son.** Una red de valor mira el contenido de los 5 buffers, el último color pintado y la ocupación, y estima **cuántos cambios de color habrá en los próximos 30 vehículos pintados**. No ve el vehículo entrante ni la cola. El planificador la usa para juzgar el futuro de cada plan: elige la acción que minimiza `cambios del plan + 0,75 × V(estado final)`. Una red sola es ruidosa; el promedio de 8 redes («juez conjunto») decide mucho mejor (en validación, 17,10 cambios frente a 19,4–20,0 de cada red sola).
+
+**Arquitectura.** Igual en las 8 (`ValueNetwork` en `src/haam_rl/adapters/value_search.py`): un mismo codificador lee cada buffer (43 entradas → 128 → 128, ReLU), los 5 códigos se combinan con su media y su máximo (así el resultado no depende del orden de los buffers), y una cabeza (256 → 128 → 1) da V(s).
+
+**Cómo se entrena una red** (`scripts/train_value.py`), en dos fases:
+
+1. **Recolección de datos.** Una «política de datos» juega `--scenarios` escenarios completos del gemelo. De cada estado se guarda la entrada de la red y el objetivo: los cambios de color que hubo realmente en los 30 vehículos pintados siguientes. Los escenarios usan semillas a partir de 7.000.000 + 100.000 × `--seed`, separadas de las de validación y test. Corre en paralelo con `--workers` procesos.
+2. **Ajuste.** Regresión con error cuadrático medio: Adam, tasa de aprendizaje 0,001, lotes de 1024, 30 épocas. El 20 % de los escenarios se reserva para medir el R² en partidas no vistas; ese R² se guarda junto a la red y se muestra en la web.
+
+Cada red produce dos archivos: `vN.pt` (los pesos) y `vN.json` (configuración, R² y política de datos).
+
+**Receta exacta de las 8 redes del proyecto.** Cinco usan la receta base con semillas distintas; las otras tres son variantes que individualmente fueron peores, pero aportan diversidad al promedio:
 
 ```bash
-# Servir la mejor política para FlexSim (y el inspector web en http://127.0.0.1:8000/ui/)
-HAAM_PLANNER=10 HAAM_VALUE=artifacts/value/v1.pt,artifacts/value/v5.pt,... \
-  python -m uvicorn haam_rl.adapters.http_api:app --host 127.0.0.1 --port 8000
+# Receta base: 1200 partidas del planificador con fragmentación (anticipación 10, ancho 32)
+python scripts/train_value.py --data-policy planner --scenarios 1200 --seed 0 --workers 6 --out artifacts/value/v1.pt
+python scripts/train_value.py --data-policy planner --scenarios 1200 --seed 4 --workers 6 --out artifacts/value/v5.pt
+python scripts/train_value.py --data-policy planner --scenarios 1200 --seed 5 --workers 6 --out artifacts/value/v6.pt
+python scripts/train_value.py --data-policy planner --scenarios 1200 --seed 6 --workers 6 --out artifacts/value/v7.pt
+python scripts/train_value.py --data-policy planner --scenarios 1200 --seed 7 --workers 6 --out artifacts/value/v8.pt
 
-# Entrenar un agente RL (una carpeta por semilla en artifacts/runs/<experimento>/seed_<n>/)
-python scripts/train.py --config configs/onehot_lookahead.json --seeds 0 1 2
+# v2: partidas del planificador guiado por v1 (iteración de política); requiere v1
+python scripts/train_value.py --data-policy artifacts/value/v1.pt --scenarios 1200 --seed 1 --workers 6 --out artifacts/value/v2.pt
 
-# Destilar el planificador guiado por valor en una red rápida
-python scripts/distill.py --config configs/onehot_lookahead_physical.json --teacher-value artifacts/value/v1.pt \
-  --set training.policy=buffer_pair training.embed_dim=128 training.activation=relu
+# v3: más datos (3000 partidas)
+python scripts/train_value.py --data-policy planner --scenarios 3000 --seed 2 --workers 6 --out artifacts/value/v3.pt
 
-# Entrenar una red de valor (juez) con partidas del planificador
-python scripts/train_value.py --out artifacts/value/v1.pt --workers 8
-
-# Comparar políticas en 500 escenarios de test, pareadas contra la heurística
-python scripts/evaluate.py --seed-set extended --models artifacts/runs/onehot --planner 10 \
-  --value artifacts/value/v1.pt,artifacts/value/v5.pt
+# v4: datos mezclados, mitad planificador y mitad heurística
+python scripts/train_value.py --data-policy planner heuristic --scenarios 3000 --seed 3 --workers 6 --out artifacts/value/v4.pt
 ```
 
-En Windows con PowerShell, las variables de entorno se definen con `$env:HAAM_PLANNER = "10"`.
+| Red | Partidas de entrenamiento | R² en partidas no vistas |
+| --- | --- | --- |
+| v1, v5, v6, v7, v8 | 1200 del planificador con fragmentación (semillas 0, 4, 5, 6, 7) | 0,65–0,70 |
+| v2 | 1200 del planificador guiado por v1 | 0,56 |
+| v3 | 3000 del planificador con fragmentación | 0,68 |
+| v4 | 1500 del planificador + 1500 de la heurística | 0,51 |
+
+Cada red tarda del orden de 10–20 minutos con 6 procesos; casi todo el tiempo es la recolección de partidas. Las redes son independientes entre sí (salvo v2, que necesita v1), así que se pueden entrenar varias a la vez si hay núcleos libres. Ajusta `--workers` a los núcleos de tu equipo.
+
+**Comprobar el juez** en los 100 escenarios de validación, antes de mirar el test:
+
+```bash
+python scripts/evaluate.py --seed-set validation --value-horizon 0 \
+  --value artifacts/value/v1.pt,artifacts/value/v2.pt,artifacts/value/v3.pt,artifacts/value/v4.pt,artifacts/value/v5.pt,artifacts/value/v6.pt,artifacts/value/v7.pt,artifacts/value/v8.pt
+```
+
+Con las 8 redes del proyecto da 24,82 cambios frente a 32,18 de la heurística (−22,9 %); si unas redes nuevas quedan claramente por encima, algo salió mal. `--value-horizon 0` evalúa el planificador sin cola (solo el próximo vehículo); `10` lo evalúa con la cola. La escala 0,75 es la elegida en validación (`--value-scale`).
+
+**Usar redes nuevas.** Basta con listarlas en `HAAM_VALUE` (separadas por comas) al levantar la API, o elegirlas en la web en «Modelos…» → «red de valor». Se puede usar cualquier número de redes: se promedian.
+
+### Agentes de aprendizaje por refuerzo (el método del paper)
+
+`scripts/train.py` entrena con MaskablePPO una configuración de `configs/` y deja una carpeta por semilla en `artifacts/runs/<experimento>/seed_<n>/`. Durante el entrenamiento evalúa periódicamente en validación y guarda como `best_model.zip` el punto con menos cambios de color (y `final_model.zip` al terminar). Cada modelo lleva al lado un `.json` con toda su configuración.
+
+```bash
+# El agente como en el paper (entrada cruda, máscara heurística), 5 semillas
+python scripts/train.py --config configs/paper.json --seeds 0 1 2 3 4 --timesteps 1000000
+
+# La red estructurada por buffers, que aprende mejor que un MLP
+python scripts/train.py --config configs/bufferpair/ppo_scratch.json --seeds 0 1 2
+
+# Cualquier campo se cambia sin editar el JSON
+python scripts/train.py --config configs/onehot.json --set training.net_arch=[256,256] training.learning_rate=0.0001
+
+# Muchas configuraciones y semillas en paralelo (una por núcleo)
+python scripts/run_experiments.py --seeds 0 1 2 3 4 --timesteps 1000000 --parallel 4   # todas las de configs/
+```
+
+Con 1M de pasos, un entrenamiento tarda unos 8–10 minutos por semilla en un núcleo. En Windows conviene dejar los valores por defecto (`--vec-env dummy --threads 1`), porque muchos procesos con PyTorch agotan la memoria.
+
+### Red destilada (imitación del planificador guiado)
+
+Para cuando haga falta decidir en menos de un milisegundo, `scripts/distill.py` enseña a una red a imitar al planificador guiado por las 8 redes de valor (DAgger: la red juega, el planificador corrige sus decisiones y la red reaprende). La red del proyecto (`bufferpair128_physical_judgesdagger`) se entrenó así, en unos 90 minutos:
+
+```bash
+python scripts/distill.py --config configs/onehot_lookahead_physical.json --seeds 0 --workers 13 --iterations 16 \
+  --teacher-value artifacts/value/v1.pt,artifacts/value/v2.pt,artifacts/value/v3.pt,artifacts/value/v4.pt,artifacts/value/v5.pt,artifacts/value/v6.pt,artifacts/value/v7.pt,artifacts/value/v8.pt \
+  --teacher-value-scale 0.75 --name bufferpair128_physical_judgesdagger \
+  --set training.policy=buffer_pair training.embed_dim=128 training.activation=relu
+```
+
+Esta red ve la cola de 10 vehículos (la usa también el comité).
+
+En Windows con PowerShell, las barras invertidas `\` del final de línea de estos ejemplos se reemplazan por el acento grave `` ` ``, o se escribe todo en una sola línea; las variables de entorno se definen con `$env:NOMBRE = "valor"`.
 
 ## Política recomendada para FlexSim
 
@@ -167,11 +265,10 @@ Semillas separadas, para que la selección de modelos nunca vea el test:
 | Test del tamaño del paper | 10000–10029 |
 | Test ampliado (resultado principal) | 30000–30499 |
 
-Todos los números de la publicación se regeneran con:
+La evaluación final (todas las políticas en los 30 y los 500 escenarios de test, latencias y barrido de llenado) se repite con:
 
 ```bash
 python scripts/research/final_evaluation.py --value <redes de valor separadas por comas> --committee-network <red>
-python scripts/build_publication.py
 ```
 
 | Script | Qué hace |
@@ -185,7 +282,6 @@ python scripts/build_publication.py
 | `scripts/benchmark.py` | Latencia por decisión de cada política |
 | `scripts/check_trace.py` | Verificar una traza de FlexSim contra el gemelo |
 | `scripts/research/*.py` | Estudios de la publicación (imitación, ajuste del planificador, jueces, comités, evaluación final) |
-| `scripts/build_publication.py` | Generar la publicación (HTML y PDF) |
 
 El entrenamiento es determinista (misma semilla, mismos pesos) y las evaluaciones no dependen del número de procesos.
 
@@ -220,7 +316,7 @@ src/haam_rl/
   config.py      configuración de experimentos (JSON)
 web/index.html   inspector (sin dependencias externas)
 flexsim/         trigger de FlexSim
-docs/publicacion publicación generada
+docs/publicacion publicación (PDF)
 tests/           dominio, aplicación, políticas híbridas y API
 ```
 
